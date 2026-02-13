@@ -23,6 +23,7 @@ export function initSender() {
   let selectedFile = null;
   let signaling = null;
   let peer = null;
+  let transferStarted = false;
 
   function showState(el) {
     [senderIdle, senderReady, senderTransferring, senderComplete, senderError].forEach(
@@ -38,6 +39,7 @@ export function initSender() {
   }
 
   function cleanup() {
+    transferStarted = false;
     if (peer) { peer.close(); peer = null; }
     if (signaling) { signaling.close(); signaling = null; }
   }
@@ -94,20 +96,16 @@ export function initSender() {
       return;
     }
 
-    // Wait for peer
+    // Wait for peer — only start transfer once
     signaling.on('peer-joined', () => {
-      startTransfer();
+      if (!transferStarted) {
+        transferStarted = true;
+        startTransfer();
+      }
     });
 
     signaling.on('error', (msg) => {
       showError(msg.message || 'Connection error');
-    });
-
-    signaling.on('close', () => {
-      // Only show error if we're still waiting
-      if (!peer) {
-        showError('Lost connection to server.');
-      }
     });
   }
 
@@ -182,8 +180,11 @@ export function initSender() {
       }
     }
 
+    // Read file as ArrayBuffer first, then send chunks synchronously
+    const fileBuffer = await selectedFile.arrayBuffer();
+
     function sendNextChunk() {
-      while (offset < selectedFile.size) {
+      while (offset < fileBuffer.byteLength) {
         if (fileChannel.bufferedAmount > HIGH_WATER_MARK) {
           fileChannel.bufferedAmountLowThreshold = LOW_WATER_MARK;
           fileChannel.onbufferedamountlow = () => {
@@ -193,22 +194,21 @@ export function initSender() {
           return;
         }
 
-        const end = Math.min(offset + CHUNK_SIZE, selectedFile.size);
-        const chunk = selectedFile.slice(offset, end);
+        const end = Math.min(offset + CHUNK_SIZE, fileBuffer.byteLength);
+        const chunk = fileBuffer.slice(offset, end);
 
-        chunk.arrayBuffer().then((buffer) => {
-          try {
-            fileChannel.send(buffer);
-          } catch {
-            showError('Transfer failed.');
-          }
-        });
+        try {
+          fileChannel.send(chunk);
+        } catch {
+          showError('Transfer failed.');
+          return;
+        }
 
         offset = end;
         updateProgress();
       }
 
-      // All chunks queued — wait for buffer to drain, then signal completion
+      // All chunks sent synchronously — wait for buffer to drain
       const waitForDrain = () => {
         if (fileChannel.bufferedAmount === 0) {
           controlChannel.send(JSON.stringify({ type: 'file-complete' }));

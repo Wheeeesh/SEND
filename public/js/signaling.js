@@ -3,7 +3,6 @@ export class SignalingClient {
     this.url = url;
     this.ws = null;
     this.handlers = {};
-    this.roomId = null;
     this._closed = false;
   }
 
@@ -13,22 +12,24 @@ export class SignalingClient {
 
       const tryConnect = () => {
         attempt++;
-        this.ws = new WebSocket(this.url);
+        const ws = new WebSocket(this.url);
+        let opened = false;
 
-        this.ws.onopen = () => {
+        ws.onopen = () => {
+          opened = true;
+          this.ws = ws;
           this._setupListeners();
           resolve();
         };
 
-        this.ws.onerror = () => {
-          // onerror is always followed by onclose, handle retry there
+        ws.onerror = () => {
+          // onerror is always followed by onclose
         };
 
-        this.ws.onclose = () => {
-          if (!this.ws._opened) {
-            // Connection never opened — retry
+        ws.onclose = () => {
+          if (!opened) {
             if (attempt < maxRetries) {
-              const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
+              const delay = Math.pow(2, attempt - 1) * 1000;
               setTimeout(tryConnect, delay);
             } else {
               reject(new Error('Could not connect to signaling server'));
@@ -42,8 +43,6 @@ export class SignalingClient {
   }
 
   _setupListeners() {
-    this.ws._opened = true;
-
     this.ws.onmessage = (event) => {
       let msg;
       try {
@@ -57,49 +56,12 @@ export class SignalingClient {
 
     this.ws.onclose = () => {
       if (this._closed) return;
-
-      // Auto-reconnect if we were in a room
-      if (this.roomId) {
-        this._reconnect();
-      } else {
-        const handler = this.handlers['close'];
-        if (handler) handler();
-      }
+      const handler = this.handlers['close'];
+      if (handler) handler();
     };
   }
 
-  async _reconnect() {
-    const maxAttempts = 5;
-    for (let i = 0; i < maxAttempts; i++) {
-      if (this._closed) return;
-      const delay = Math.pow(2, i) * 1000; // 1s, 2s, 4s, 8s, 16s
-      await new Promise(r => setTimeout(r, delay));
-      if (this._closed) return;
-
-      try {
-        this.ws = new WebSocket(this.url);
-        await new Promise((resolve, reject) => {
-          this.ws.onopen = resolve;
-          this.ws.onerror = reject;
-        });
-        this._setupListeners();
-        // Re-join room
-        if (this.roomId) {
-          this.send({ type: 'join', roomId: this.roomId });
-        }
-        return; // Success
-      } catch {
-        // Try again
-      }
-    }
-
-    // All attempts failed
-    const handler = this.handlers['close'];
-    if (handler) handler();
-  }
-
   joinRoom(roomId) {
-    this.roomId = roomId;
     this.send({ type: 'join', roomId });
   }
 
