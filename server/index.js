@@ -46,6 +46,7 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const rooms = new Map();
 
 wss.on('connection', (ws) => {
+  console.log('WebSocket client connected');
   ws.isAlive = true;
   ws.roomId = null;
 
@@ -74,6 +75,7 @@ wss.on('connection', (ws) => {
         }
 
         // Join room
+        console.log(`Client joining room: ${roomId}`);
         ws.roomId = roomId;
         if (!rooms.has(roomId)) {
           rooms.set(roomId, new Set());
@@ -106,6 +108,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    console.log(`WebSocket client disconnected${ws.roomId ? ` (room: ${ws.roomId})` : ''}`);
     if (ws.roomId) {
       const room = rooms.get(ws.roomId);
       if (room) {
@@ -133,7 +136,7 @@ const heartbeat = setInterval(() => {
     ws.isAlive = false;
     ws.ping();
   });
-}, 30000);
+}, 20000);
 
 wss.on('close', () => {
   clearInterval(heartbeat);
