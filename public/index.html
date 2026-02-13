@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SEND</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>SEND</h1>
+      <p class="subtitle">Peer-to-peer file transfer</p>
+    </header>
+
+    <!-- Unsupported browser -->
+    <div id="unsupported" class="view" hidden>
+      <div class="error-box">
+        <p>Your browser does not support WebRTC.</p>
+        <p>Please use a modern browser like Chrome, Firefox, Safari, or Edge.</p>
+      </div>
+    </div>
+
+    <!-- SENDER VIEW -->
+    <div id="sender-view" class="view" hidden>
+
+      <!-- State: idle — drop zone -->
+      <div id="sender-idle" class="state">
+        <div id="drop-zone" class="drop-zone">
+          <div class="drop-zone-content">
+            <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <p>Drop a file here</p>
+            <p class="hint">or click to browse</p>
+          </div>
+          <input type="file" id="file-input" class="file-input">
+        </div>
+      </div>
+
+      <!-- State: ready — file selected, link shown -->
+      <div id="sender-ready" class="state" hidden>
+        <div class="file-info">
+          <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <div>
+            <p class="file-name" id="sender-file-name"></p>
+            <p class="file-size" id="sender-file-size"></p>
+          </div>
+        </div>
+        <div class="link-section">
+          <p class="label">Share this link:</p>
+          <div class="link-row">
+            <input type="text" id="share-link" class="share-link" readonly>
+            <button id="copy-btn" class="btn btn-copy">Copy</button>
+          </div>
+        </div>
+        <div class="status" id="sender-status">
+          <div class="spinner"></div>
+          <span>Waiting for receiver...</span>
+        </div>
+      </div>
+
+      <!-- State: transferring -->
+      <div id="sender-transferring" class="state" hidden>
+        <div class="file-info">
+          <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <div>
+            <p class="file-name" id="sender-transfer-name"></p>
+            <p class="file-size" id="sender-transfer-size"></p>
+          </div>
+        </div>
+        <div class="progress-section">
+          <div class="progress-bar">
+            <div class="progress-fill" id="sender-progress-fill"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="sender-progress-pct">0%</span>
+            <span id="sender-progress-detail"></span>
+          </div>
+          <div class="progress-stats">
+            <span id="sender-speed"></span>
+            <span id="sender-eta"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- State: complete -->
+      <div id="sender-complete" class="state" hidden>
+        <div class="success-box">
+          <svg class="check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          <p>Transfer complete</p>
+        </div>
+        <button id="send-another" class="btn btn-primary">Send another file</button>
+      </div>
+
+      <!-- State: error -->
+      <div id="sender-error" class="state" hidden>
+        <div class="error-box">
+          <p id="sender-error-msg"></p>
+        </div>
+        <button id="sender-retry" class="btn btn-primary">Try again</button>
+      </div>
+    </div>
+
+    <!-- RECEIVER VIEW -->
+    <div id="receiver-view" class="view" hidden>
+
+      <!-- State: connecting -->
+      <div id="receiver-connecting" class="state">
+        <div class="status">
+          <div class="spinner"></div>
+          <span>Connecting to sender...</span>
+        </div>
+      </div>
+
+      <!-- State: receiving -->
+      <div id="receiver-receiving" class="state" hidden>
+        <div class="file-info">
+          <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <div>
+            <p class="file-name" id="receiver-file-name"></p>
+            <p class="file-size" id="receiver-file-size"></p>
+          </div>
+        </div>
+        <div class="progress-section">
+          <div class="progress-bar">
+            <div class="progress-fill" id="receiver-progress-fill"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="receiver-progress-pct">0%</span>
+            <span id="receiver-progress-detail"></span>
+          </div>
+          <div class="progress-stats">
+            <span id="receiver-speed"></span>
+            <span id="receiver-eta"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- State: complete -->
+      <div id="receiver-complete" class="state" hidden>
+        <div class="success-box">
+          <svg class="check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          <p>Download complete</p>
+          <p class="file-saved" id="receiver-saved-name"></p>
+        </div>
+      </div>
+
+      <!-- State: error -->
+      <div id="receiver-error" class="state" hidden>
+        <div class="error-box">
+          <p id="receiver-error-msg"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
