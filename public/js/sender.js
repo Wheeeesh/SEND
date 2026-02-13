@@ -112,14 +112,14 @@ export function initSender() {
   async function startTransfer() {
     peer = new PeerConnection(signaling);
 
-    // Create data channels
+    // Create data channels BEFORE the offer
     const controlChannel = peer.createDataChannel('control');
     const fileChannel = peer.createDataChannel('file', { ordered: true });
     fileChannel.binaryType = 'arraybuffer';
 
-    // Handle answer from receiver
-    signaling.on('answer', (msg) => {
-      peer.handleAnswer(msg.sdp);
+    // Register answer handler BEFORE creating offer
+    signaling.on('answer', async (msg) => {
+      await peer.handleAnswer(msg.sdp);
     });
 
     // Monitor connection
@@ -133,13 +133,26 @@ export function initSender() {
       showError('Receiver disconnected.');
     });
 
-    // Wait for file channel to open, then send
-    fileChannel.onopen = () => {
-      showState(senderTransferring);
-      sendFileData(controlChannel, fileChannel);
+    // Wait for BOTH channels to open before sending
+    let controlOpen = false;
+    let fileOpen = false;
+
+    controlChannel.onopen = () => {
+      controlOpen = true;
+      if (fileOpen) startSending();
     };
 
-    // Create offer
+    fileChannel.onopen = () => {
+      fileOpen = true;
+      if (controlOpen) startSending();
+    };
+
+    function startSending() {
+      showState(senderTransferring);
+      sendFileData(controlChannel, fileChannel);
+    }
+
+    // Create offer — this triggers the whole WebRTC negotiation
     try {
       await peer.createOffer();
     } catch {
@@ -148,7 +161,7 @@ export function initSender() {
   }
 
   async function sendFileData(controlChannel, fileChannel) {
-    // Send metadata
+    // Send metadata on control channel
     controlChannel.send(JSON.stringify({
       type: 'file-meta',
       name: selectedFile.name,
@@ -180,7 +193,7 @@ export function initSender() {
       }
     }
 
-    // Read file as ArrayBuffer first, then send chunks synchronously
+    // Read entire file into memory, then send chunks synchronously
     const fileBuffer = await selectedFile.arrayBuffer();
 
     function sendNextChunk() {
@@ -208,13 +221,19 @@ export function initSender() {
         updateProgress();
       }
 
-      // All chunks sent synchronously — wait for buffer to drain
+      // All chunks queued on the file channel.
+      // Wait for buffer to fully drain before sending file-complete on control channel.
+      // This ensures all file data is sent before the completion signal.
       const waitForDrain = () => {
         if (fileChannel.bufferedAmount === 0) {
-          controlChannel.send(JSON.stringify({ type: 'file-complete' }));
-          showState(senderComplete);
+          // Additional delay to ensure receiver processes file chunks
+          // before the control message arrives (separate channel, may be faster)
+          setTimeout(() => {
+            controlChannel.send(JSON.stringify({ type: 'file-complete' }));
+            showState(senderComplete);
+          }, 200);
         } else {
-          setTimeout(waitForDrain, 100);
+          setTimeout(waitForDrain, 50);
         }
       };
       waitForDrain();

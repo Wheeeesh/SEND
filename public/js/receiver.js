@@ -11,6 +11,7 @@ export function initReceiver(roomId) {
 
   let signaling = null;
   let peer = null;
+  let done = false;
 
   function showState(el) {
     [receiverConnecting, receiverReceiving, receiverComplete, receiverError].forEach(
@@ -20,6 +21,7 @@ export function initReceiver(roomId) {
   }
 
   function showError(msg) {
+    if (done) return;
     receiverErrorMsg.textContent = msg;
     showState(receiverError);
     cleanup();
@@ -45,11 +47,13 @@ export function initReceiver(roomId) {
     });
 
     signaling.on('peer-left', () => {
-      showError('Sender disconnected. Transfer cancelled.');
+      if (!done) {
+        showError('Sender disconnected. Transfer cancelled.');
+      }
     });
 
     signaling.on('close', () => {
-      if (!peer) {
+      if (!peer && !done) {
         showError('Lost connection to server.');
       }
     });
@@ -59,52 +63,64 @@ export function initReceiver(roomId) {
       peer = new PeerConnection(signaling);
 
       peer.onConnectionStateChange = (state) => {
-        if (state === 'failed' || state === 'disconnected') {
+        if ((state === 'failed' || state === 'disconnected') && !done) {
           showError('Connection to sender lost.');
         }
       };
 
-      // Listen for data channels
+      // File transfer state
       let fileMeta = null;
       const chunks = [];
       let receivedBytes = 0;
       let startTime = null;
+      let fileComplete = false;
+
+      // Called when we have both all chunks AND the file-complete signal
+      function tryFinalize() {
+        if (!fileComplete) return;
+        if (!fileMeta) return;
+        if (receivedBytes !== fileMeta.size) return;
+
+        done = true;
+
+        // Assemble and download
+        const blob = new Blob(chunks, { type: fileMeta.mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileMeta.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        document.getElementById('receiver-saved-name').textContent = fileMeta.name;
+        showState(receiverComplete);
+        cleanup();
+      }
 
       peer.onDataChannel((channel) => {
         if (channel.label === 'control') {
           channel.onmessage = (event) => {
-            const msg = JSON.parse(event.data);
+            let controlMsg;
+            try {
+              controlMsg = JSON.parse(event.data);
+            } catch {
+              return;
+            }
 
-            if (msg.type === 'file-meta') {
-              fileMeta = msg;
+            if (controlMsg.type === 'file-meta') {
+              fileMeta = controlMsg;
               startTime = Date.now();
 
-              document.getElementById('receiver-file-name').textContent = msg.name;
-              document.getElementById('receiver-file-size').textContent = formatBytes(msg.size);
+              document.getElementById('receiver-file-name').textContent = controlMsg.name;
+              document.getElementById('receiver-file-size').textContent = formatBytes(controlMsg.size);
               showState(receiverReceiving);
             }
 
-            if (msg.type === 'file-complete') {
-              // Verify size
-              if (fileMeta && receivedBytes !== fileMeta.size) {
-                showError(`Transfer incomplete: received ${formatBytes(receivedBytes)} of ${formatBytes(fileMeta.size)}`);
-                return;
-              }
-
-              // Assemble and download
-              const blob = new Blob(chunks, { type: fileMeta.mimeType });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = fileMeta.name;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-              URL.revokeObjectURL(url);
-
-              document.getElementById('receiver-saved-name').textContent = fileMeta.name;
-              showState(receiverComplete);
-              cleanup();
+            if (controlMsg.type === 'file-complete') {
+              fileComplete = true;
+              tryFinalize();
             }
           };
         }
@@ -130,6 +146,11 @@ export function initReceiver(roomId) {
                 const remaining = (fileMeta.size - receivedBytes) / speed;
                 document.getElementById('receiver-eta').textContent = `~${formatTime(remaining)}`;
               }
+
+              // Check if all bytes received — try finalize in case file-complete already arrived
+              if (receivedBytes === fileMeta.size) {
+                tryFinalize();
+              }
             }
           };
         }
@@ -143,10 +164,8 @@ export function initReceiver(roomId) {
       }
     });
 
-    // Also handle the peer-joined event (we may already have connected)
-    signaling.on('peer-joined', () => {
-      // Sender will create the offer, we just wait
-    });
+    // Sender will create the offer after peer-joined, we just wait
+    signaling.on('peer-joined', () => {});
   }
 
   connect();
