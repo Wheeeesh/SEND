@@ -18,7 +18,18 @@ const MIME_TYPES = {
 
 // Static file server
 const server = http.createServer((req, res) => {
-  let filePath = path.join(PUBLIC_DIR, req.url === '/' ? 'index.html' : req.url);
+  // Parse URL to get pathname without query string
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const pathname = url.pathname;
+
+  // Don't serve static files for /ws path
+  if (pathname === '/ws') {
+    res.writeHead(426, { 'Content-Type': 'text/plain' });
+    res.end('WebSocket upgrade required');
+    return;
+  }
+
+  let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
 
   // SPA fallback: serve index.html for unknown paths
   if (!fs.existsSync(filePath)) {
@@ -39,8 +50,19 @@ const server = http.createServer((req, res) => {
   });
 });
 
-// WebSocket signaling server
-const wss = new WebSocketServer({ server, path: '/ws' });
+// WebSocket signaling server — handle upgrade manually for Fly.io compatibility
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (request, socket, head) => {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === '/ws') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
 
 // Room management: roomId -> Set<WebSocket>
 const rooms = new Map();
