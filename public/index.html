@@ -551,6 +551,24 @@
 
 </div>
 
+<!-- DEBUG PANEL — visible when ?debug=1 is in the URL -->
+<div id="debug-panel" class="hidden" style="
+  position:fixed; bottom:0; left:0; right:0;
+  background:#0a0a0a; border-top:1px solid #222;
+  font-family:'JetBrains Mono',monospace; font-size:11px;
+  color:#777; max-height:40vh; overflow-y:auto;
+  padding:10px 14px; z-index:9999;
+">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+    <span style="color:#00ff88;letter-spacing:0.1em">DEBUG</span>
+    <span id="debug-ice-state" style="color:#555">ice: —</span>
+    <span id="debug-conn-state" style="color:#555">conn: —</span>
+    <span id="debug-gather-state" style="color:#555">gather: —</span>
+    <button onclick="document.getElementById('debug-log').innerHTML=''" style="background:none;border:1px solid #222;color:#555;padding:2px 8px;cursor:pointer;font-family:inherit;font-size:10px">clear</button>
+  </div>
+  <pre id="debug-log" style="margin:0;white-space:pre-wrap;word-break:break-all;line-height:1.6"></pre>
+</div>
+
 <script>
 'use strict';
 
@@ -596,6 +614,68 @@ var RTC_CONFIG = {
 
 // How long to wait for ICE gathering before giving up and sending offer anyway
 var ICE_GATHERING_TIMEOUT_MS = 4000;
+
+/* =========================================================
+   DEBUG
+   ========================================================= */
+
+var DEBUG = location.search.indexOf('debug=1') !== -1;
+
+function dbg(msg, color) {
+  if (!DEBUG) return;
+  var panel = document.getElementById('debug-panel');
+  var log = document.getElementById('debug-log');
+  if (!panel || !log) return;
+  panel.classList.remove('hidden');
+  var ts = new Date().toISOString().slice(11, 23);
+  var line = document.createElement('div');
+  line.style.color = color || '#666';
+  line.style.borderBottom = '1px solid #111';
+  line.style.padding = '2px 0';
+  line.textContent = '[' + ts + '] ' + msg;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+  console.log('[SEND]', msg);
+}
+
+function dbgState(pc) {
+  if (!DEBUG || !pc) return;
+  document.getElementById('debug-ice-state').textContent = 'ice: ' + pc.iceConnectionState;
+  document.getElementById('debug-conn-state').textContent = 'conn: ' + pc.connectionState;
+  document.getElementById('debug-gather-state').textContent = 'gather: ' + pc.iceGatheringState;
+}
+
+function attachDebugListeners(pc, role) {
+  if (!DEBUG) return;
+  pc.oniceconnectionstatechange = function() {
+    dbg('[' + role + '] iceConnectionState → ' + pc.iceConnectionState,
+      pc.iceConnectionState === 'connected' ? '#00ff88' :
+      pc.iceConnectionState === 'failed' ? '#ff4455' : '#888');
+    dbgState(pc);
+  };
+  pc.onconnectionstatechange = function() {
+    dbg('[' + role + '] connectionState → ' + pc.connectionState,
+      pc.connectionState === 'connected' ? '#00ff88' :
+      pc.connectionState === 'failed' ? '#ff4455' : '#888');
+    dbgState(pc);
+  };
+  pc.onicegatheringstatechange = function() {
+    dbg('[' + role + '] iceGatheringState → ' + pc.iceGatheringState, '#aaa');
+    dbgState(pc);
+  };
+  pc.onsignalingstatechange = function() {
+    dbg('[' + role + '] signalingState → ' + pc.signalingState, '#aaa');
+  };
+  var origOnIceCandidate = pc.onicecandidate;
+  pc.addEventListener('icecandidate', function(e) {
+    if (e.candidate) {
+      var c = e.candidate;
+      dbg('[' + role + '] ICE candidate: ' + c.type + ' / ' + c.protocol + ' / ' + c.address, '#555');
+    } else {
+      dbg('[' + role + '] ICE gathering complete (null candidate)', '#aaa');
+    }
+  });
+}
 
 /* =========================================================
    UTILS
@@ -660,6 +740,7 @@ SignalingClient.prototype.connect = function() {
 
     ws.onopen = function() {
       self.ready = true;
+      dbg('[ws] connected, joining session ' + self.sessionId, '#00ff88');
       self.ws.send(JSON.stringify({ type: 'join', sessionId: self.sessionId }));
       self.queue.forEach(function(m) { ws.send(JSON.stringify(m)); });
       self.queue = [];
@@ -669,12 +750,13 @@ SignalingClient.prototype.connect = function() {
     ws.onmessage = function(e) {
       try {
         var msg = JSON.parse(e.data);
+        dbg('[ws] ← ' + msg.type + (msg.candidate ? ' (' + (msg.candidate.type || 'candidate') + ')' : ''), '#444');
         self.onMessage(msg);
       } catch(err) {}
     };
 
-    ws.onerror = function(e) { reject(new Error('WebSocket error')); };
-    ws.onclose = function() { self.ready = false; };
+    ws.onerror = function(e) { dbg('[ws] error', '#ff4455'); reject(new Error('WebSocket error')); };
+    ws.onclose = function() { dbg('[ws] closed', '#888'); self.ready = false; };
   });
 };
 
@@ -841,43 +923,51 @@ SenderApp.prototype.handleSignalingMessage = function(msg) {
 
 SenderApp.prototype.createOffer = function() {
   var self = this;
+  dbg('[sender] creating RTCPeerConnection', '#aaa');
   this.pc = new RTCPeerConnection(RTC_CONFIG);
+  attachDebugListeners(this.pc, 'sender');
 
   // DataChannel MUST be created before createOffer() — Safari requirement
   this.dc = this.pc.createDataChannel('file-transfer', { ordered: true });
   this.dc.binaryType = 'arraybuffer';
+  dbg('[sender] DataChannel created, binaryType=' + this.dc.binaryType, '#aaa');
 
-  // Set bufferedAmountLowThreshold if supported (not all Safari versions support it)
   if ('bufferedAmountLowThreshold' in this.dc) {
-    this.dc.bufferedAmountLowThreshold = 512 * 1024; // 512 KB
+    this.dc.bufferedAmountLowThreshold = 512 * 1024;
   }
 
   this.dc.onopen = function() {
+    dbg('[sender] DataChannel open', '#00ff88');
     self.setStatus('sending...');
     self.sendFile();
   };
 
   this.dc.onerror = function(e) {
-    self.showError('DataChannel error: ' + (e.error ? e.error.message : 'unknown'));
+    var msg = e.error ? e.error.message : 'unknown';
+    dbg('[sender] DataChannel error: ' + msg, '#ff4455');
+    self.showError('DataChannel error: ' + msg);
   };
 
-  // Trickle ICE: relay each candidate as it's gathered
-  // Send null candidate too so receiver knows gathering is done
+  this.dc.onclose = function() { dbg('[sender] DataChannel closed', '#888'); };
+
   this.pc.onicecandidate = function(e) {
     if (e.candidate) {
+      dbg('[sender] → relaying candidate: ' + e.candidate.type + '/' + e.candidate.protocol, '#555');
       self.signaling.send({ type: 'ice-candidate', candidate: e.candidate.toJSON() });
+    } else {
+      dbg('[sender] ICE gathering done', '#aaa');
     }
-    // Don't send null — it's meaningless to the other side and can cause errors
   };
 
-  // Monitor both connectionState AND iceConnectionState — Safari is more reliable on ice*
   this.pc.onconnectionstatechange = function() {
+    dbg('[sender] connectionState=' + self.pc.connectionState);
     if (self.pc.connectionState === 'failed') {
       self.showError('P2P connection failed — the receiver may be behind a restrictive firewall');
     }
   };
   this.pc.oniceconnectionstatechange = function() {
     var s = self.pc.iceConnectionState;
+    dbg('[sender] iceConnectionState=' + s);
     if (s === 'failed') {
       self.showError('ICE connection failed — could not establish a direct or relayed path');
     }
@@ -887,17 +977,22 @@ SenderApp.prototype.createOffer = function() {
   };
 
   this.pc.createOffer()
-    .then(function(offer) { return self.pc.setLocalDescription(offer); })
+    .then(function(offer) {
+      dbg('[sender] offer created, setting local description', '#aaa');
+      return self.pc.setLocalDescription(offer);
+    })
     .then(function() {
-      // Wait for ICE gathering to complete (or timeout) before sending offer
-      // This gives Safari's ICE agent time to gather TURN candidates
+      dbg('[sender] waiting for ICE gathering (max ' + ICE_GATHERING_TIMEOUT_MS + 'ms)...', '#aaa');
       return waitForIceGathering(self.pc);
     })
     .then(function() {
-      // Send the fully-gathered (or timed-out) local description
-      self.signaling.send({ type: 'offer', sdp: self.pc.localDescription.toJSON() });
+      var sdp = self.pc.localDescription.toJSON();
+      var candidateCount = (sdp.sdp.match(/a=candidate/g) || []).length;
+      dbg('[sender] sending offer with ' + candidateCount + ' embedded candidates', '#aaa');
+      self.signaling.send({ type: 'offer', sdp: sdp });
     })
     .catch(function(e) {
+      dbg('[sender] offer failed: ' + e.message, '#ff4455');
       self.showError('Failed to create offer: ' + e.message);
     });
 };
@@ -1008,22 +1103,29 @@ ReceiverApp.prototype.init = function() {
 
 ReceiverApp.prototype.setupPeerConnection = function() {
   var self = this;
+  dbg('[receiver] creating RTCPeerConnection', '#aaa');
   this.pc = new RTCPeerConnection(RTC_CONFIG);
+  attachDebugListeners(this.pc, 'receiver');
 
   this.pc.onicecandidate = function(e) {
     if (e.candidate) {
+      dbg('[receiver] → relaying candidate: ' + e.candidate.type + '/' + e.candidate.protocol, '#555');
       self.signaling.send({ type: 'ice-candidate', candidate: e.candidate.toJSON() });
+    } else {
+      dbg('[receiver] ICE gathering done', '#aaa');
     }
   };
 
-  // Watch both state machines — Safari is more reliable with iceConnectionState
   this.pc.onconnectionstatechange = function() {
+    dbg('[receiver] connectionState=' + self.pc.connectionState);
     if (self.pc.connectionState === 'failed') {
       self.showError('P2P connection failed — try reopening the link');
     }
   };
   this.pc.oniceconnectionstatechange = function() {
-    if (self.pc.iceConnectionState === 'failed') {
+    var s = self.pc.iceConnectionState;
+    dbg('[receiver] iceConnectionState=' + s);
+    if (s === 'failed') {
       self.showError('ICE connection failed — could not reach sender');
     }
   };
@@ -1031,18 +1133,27 @@ ReceiverApp.prototype.setupPeerConnection = function() {
   this.pc.ondatachannel = function(e) {
     var ch = e.channel;
     ch.binaryType = 'arraybuffer';
+    dbg('[receiver] ondatachannel fired, readyState=' + ch.readyState, '#aaa');
 
     ch.onmessage = function(ev) {
+      if (typeof ev.data === 'string') {
+        try { dbg('[receiver] ctrl msg: ' + JSON.parse(ev.data).type, '#555'); } catch(e) {}
+      } else {
+        dbg('[receiver] binary chunk ' + ev.data.byteLength + ' bytes', '#333');
+      }
       self.handleChannelMessage(ev.data);
     };
 
     ch.onerror = function(ev) {
-      self.showError('DataChannel error: ' + (ev.error ? ev.error.message : 'unknown'));
+      var msg = ev.error ? ev.error.message : 'unknown';
+      dbg('[receiver] DataChannel error: ' + msg, '#ff4455');
+      self.showError('DataChannel error: ' + msg);
     };
 
-    // Guard: onopen may already have fired by the time we attach this handler
-    // This happens in Safari when the channel opens very quickly
+    ch.onclose = function() { dbg('[receiver] DataChannel closed', '#888'); };
+
     function onChannelOpen() {
+      dbg('[receiver] DataChannel open', '#00ff88');
       document.getElementById('recv-waiting').classList.add('hidden');
       document.getElementById('recv-receiving').classList.remove('hidden');
     }
@@ -1060,25 +1171,35 @@ ReceiverApp.prototype.handleSignalingMessage = function(msg) {
   switch (msg.type) {
     case 'offer':
       this.setupPeerConnection();
+      dbg('[receiver] got offer, setting remote description', '#aaa');
       this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
         .then(function() {
           self.remoteDescSet = true;
-          // Flush buffered ICE candidates now that remote desc is set
+          dbg('[receiver] remote desc set, flushing ' + self.pendingCandidates.length + ' buffered candidates', '#aaa');
           self.pendingCandidates.forEach(function(c) {
-            self.pc.addIceCandidate(new RTCIceCandidate(c)).catch(function() {});
+            self.pc.addIceCandidate(new RTCIceCandidate(c)).catch(function(e) {
+              dbg('[receiver] addIceCandidate error: ' + e.message, '#ff4455');
+            });
           });
           self.pendingCandidates = [];
           return self.pc.createAnswer();
         })
-        .then(function(answer) { return self.pc.setLocalDescription(answer); })
+        .then(function(answer) {
+          dbg('[receiver] answer created, setting local description', '#aaa');
+          return self.pc.setLocalDescription(answer);
+        })
         .then(function() {
-          // Wait for ICE gathering before sending answer — critical for Safari/iOS
+          dbg('[receiver] waiting for ICE gathering...', '#aaa');
           return waitForIceGathering(self.pc);
         })
         .then(function() {
-          self.signaling.send({ type: 'answer', sdp: self.pc.localDescription.toJSON() });
+          var sdp = self.pc.localDescription.toJSON();
+          var candidateCount = (sdp.sdp.match(/a=candidate/g) || []).length;
+          dbg('[receiver] sending answer with ' + candidateCount + ' embedded candidates', '#aaa');
+          self.signaling.send({ type: 'answer', sdp: sdp });
         })
         .catch(function(e) {
+          dbg('[receiver] negotiation failed: ' + e.message, '#ff4455');
           self.showError('WebRTC negotiation failed: ' + e.message);
         });
       break;
