@@ -577,44 +577,44 @@
    CONSTANTS
    ========================================================= */
 
-var CHUNK_SIZE = 16384; // 16 KB — smaller chunks are more reliable on Safari/iOS
+var CHUNK_SIZE = 16384; // 16 KB — more reliable on Safari/iOS
 
-// ICE servers: multiple STUN + free TURN relays via Open Relay Project
-// TURN is essential for Safari on iOS which restricts host ICE candidates
-var ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun.relay.metered.ca:80' },
-  {
-    urls: 'turn:global.relay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  },
-  {
-    urls: 'turn:global.relay.metered.ca:80?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  },
-  {
-    urls: 'turn:global.relay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  },
-  {
-    urls: 'turns:global.relay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  }
-];
-
-var RTC_CONFIG = {
-  iceServers: ICE_SERVERS,
-  sdpSemantics: 'unified-plan',
-  iceCandidatePoolSize: 10
-};
+// RTC_CONFIG is populated at runtime by fetchIceConfig() before any peer connection is created
+var RTC_CONFIG = null;
 
 // How long to wait for ICE gathering before giving up and sending offer anyway
-var ICE_GATHERING_TIMEOUT_MS = 4000;
+var ICE_GATHERING_TIMEOUT_MS = 6000;
+
+// Fetch ICE server config from our own server's /ice endpoint.
+// Server returns Metered TURN credentials if configured, or STUN-only fallback.
+function fetchIceConfig() {
+  return fetch('/ice')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      RTC_CONFIG = {
+        iceServers: data.iceServers,
+        sdpSemantics: 'unified-plan',
+        iceCandidatePoolSize: 10
+      };
+      var hasTurn = data.iceServers.some(function(s) {
+        return (Array.isArray(s.urls) ? s.urls.join(',') : s.urls).indexOf('turn:') !== -1;
+      });
+      dbg('[ice] loaded ' + data.iceServers.length + ' servers, TURN=' + hasTurn, hasTurn ? '#00ff88' : '#ff8800');
+      return RTC_CONFIG;
+    })
+    .catch(function(e) {
+      // If /ice fails, fall back to Google STUN only
+      dbg('[ice] /ice fetch failed (' + e.message + '), using STUN only', '#ff8800');
+      RTC_CONFIG = {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ],
+        sdpSemantics: 'unified-plan'
+      };
+      return RTC_CONFIG;
+    });
+}
 
 /* =========================================================
    DEBUG
@@ -870,6 +870,9 @@ SenderApp.prototype.onFileSelected = function(file) {
 
   this.setStatus('waiting for receiver to open link...');
 
+  // Pre-fetch ICE config now so it's cached when receiver joins
+  fetchIceConfig();
+
   this.signaling = new SignalingClient(this.sessionId, function(msg) {
     self.handleSignalingMessage(msg);
   });
@@ -883,7 +886,10 @@ SenderApp.prototype.handleSignalingMessage = function(msg) {
   switch (msg.type) {
     case 'receiver-joined':
       this.setStatus('receiver connected — establishing P2P channel...');
-      this.createOffer();
+      // Ensure ICE config is ready before creating the offer
+      (RTC_CONFIG ? Promise.resolve(RTC_CONFIG) : fetchIceConfig()).then(function() {
+        self.createOffer();
+      });
       break;
 
     case 'answer':
@@ -1179,52 +1185,56 @@ ReceiverApp.prototype.setupPeerConnection = function() {
 ReceiverApp.prototype.handleSignalingMessage = function(msg) {
   var self = this;
   switch (msg.type) {
+
     case 'offer':
-      this.setStep('offer received — setting up WebRTC...');
-      this.setupPeerConnection();
-      dbg('[receiver] got offer, setting remote description', '#aaa');
-      this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
-        .then(function() {
-          self.remoteDescSet = true;
-          dbg('[receiver] remote desc set, flushing ' + self.pendingCandidates.length + ' buffered candidates', '#aaa');
-          self.pendingCandidates.forEach(function(c) {
-            self.pc.addIceCandidate(new RTCIceCandidate(c)).catch(function(e) {
-              dbg('[receiver] addIceCandidate error: ' + e.message, '#ff4455');
+      this.setStep('offer received — fetching ICE config...');
+      var offerMsg = msg;
+      (RTC_CONFIG ? Promise.resolve(RTC_CONFIG) : fetchIceConfig()).then(function() {
+        self.setStep('offer received — setting up WebRTC...');
+        self.setupPeerConnection();
+        dbg('[receiver] got offer, setting remote description', '#aaa');
+        self.pc.setRemoteDescription(new RTCSessionDescription(offerMsg.sdp))
+          .then(function() {
+            self.remoteDescSet = true;
+            dbg('[receiver] remote desc set, flushing ' + self.pendingCandidates.length + ' buffered candidates', '#aaa');
+            self.pendingCandidates.forEach(function(c) {
+              self.pc.addIceCandidate(new RTCIceCandidate(c)).catch(function(e) {
+                dbg('[receiver] addIceCandidate error: ' + e.message, '#ff4455');
+              });
             });
+            self.pendingCandidates = [];
+            self.setStep('creating answer...');
+            return self.pc.createAnswer();
+          })
+          .then(function(answer) {
+            dbg('[receiver] answer created, setting local description', '#aaa');
+            return self.pc.setLocalDescription(answer);
+          })
+          .then(function() {
+            self.setStep('gathering ICE candidates (finding network path)...');
+            dbg('[receiver] waiting for ICE gathering...', '#aaa');
+            return waitForIceGathering(self.pc);
+          })
+          .then(function() {
+            var sdp = self.pc.localDescription.toJSON();
+            var candidateCount = (sdp.sdp.match(/a=candidate/g) || []).length;
+            self.setStep('sent answer (' + candidateCount + ' candidates) — waiting for P2P connection...');
+            dbg('[receiver] sending answer with ' + candidateCount + ' embedded candidates', '#aaa');
+            self.signaling.send({ type: 'answer', sdp: sdp });
+          })
+          .catch(function(e) {
+            dbg('[receiver] negotiation failed: ' + e.message, '#ff4455');
+            self.showError('WebRTC negotiation failed: ' + e.message);
           });
-          self.pendingCandidates = [];
-          self.setStep('creating answer...');
-          return self.pc.createAnswer();
-        })
-        .then(function(answer) {
-          dbg('[receiver] answer created, setting local description', '#aaa');
-          return self.pc.setLocalDescription(answer);
-        })
-        .then(function() {
-          self.setStep('gathering ICE candidates (finding network path)...');
-          dbg('[receiver] waiting for ICE gathering...', '#aaa');
-          return waitForIceGathering(self.pc);
-        })
-        .then(function() {
-          var sdp = self.pc.localDescription.toJSON();
-          var candidateCount = (sdp.sdp.match(/a=candidate/g) || []).length;
-          self.setStep('sent answer (' + candidateCount + ' candidates) — waiting for P2P connection...');
-          dbg('[receiver] sending answer with ' + candidateCount + ' embedded candidates', '#aaa');
-          self.signaling.send({ type: 'answer', sdp: sdp });
-        })
-        .catch(function(e) {
-          dbg('[receiver] negotiation failed: ' + e.message, '#ff4455');
-          self.showError('WebRTC negotiation failed: ' + e.message);
-        });
+      });
       break;
 
     case 'ice-candidate':
-      if (!msg.candidate) return; // ignore null end-of-candidates
+      if (!msg.candidate) return;
       if (!this.pc) return;
       if (this.remoteDescSet) {
         this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(function() {});
       } else {
-        // Buffer until remote description is set
         this.pendingCandidates.push(msg.candidate);
       }
       break;
