@@ -507,6 +507,7 @@
     <div id="recv-waiting" class="receiver-center">
       <div class="spinner"></div>
       <p class="receiver-title">connecting to sender...</p>
+      <p id="recv-step" style="font-family:var(--font-mono);font-size:10px;color:var(--muted);text-align:center;margin-top:-10px;max-width:300px;line-height:1.6"></p>
     </div>
 
     <div id="recv-receiving" class="hidden">
@@ -619,7 +620,9 @@ var ICE_GATHERING_TIMEOUT_MS = 4000;
    DEBUG
    ========================================================= */
 
-var DEBUG = location.search.indexOf('debug=1') !== -1;
+// Parse debug flag from anywhere in the full URL (search OR hash), since
+// browsers treat everything after # as the hash, not the query string.
+var DEBUG = location.href.indexOf('debug=1') !== -1;
 
 function dbg(msg, color) {
   if (!DEBUG) return;
@@ -1093,12 +1096,15 @@ ReceiverApp.prototype.init = function() {
   document.getElementById('view-sender').classList.add('hidden');
   document.getElementById('view-receiver').classList.remove('hidden');
 
+  this.setStep('connecting to signaling server...');
   this.signaling = new SignalingClient(this.sessionId, function(msg) {
     self.handleSignalingMessage(msg);
   });
-  this.signaling.connect().catch(function(err) {
-    self.showError('Could not connect to signaling server: ' + err.message);
-  });
+  this.signaling.connect()
+    .then(function() { self.setStep('joined session — waiting for sender offer...'); })
+    .catch(function(err) {
+      self.showError('Could not connect to signaling server: ' + err.message);
+    });
 };
 
 ReceiverApp.prototype.setupPeerConnection = function() {
@@ -1125,9 +1131,13 @@ ReceiverApp.prototype.setupPeerConnection = function() {
   this.pc.oniceconnectionstatechange = function() {
     var s = self.pc.iceConnectionState;
     dbg('[receiver] iceConnectionState=' + s);
+    self.setStep('ICE: ' + s);
+    if (s === 'checking') self.setStep('ICE checking — trying to connect to sender...');
+    if (s === 'connected' || s === 'completed') self.setStep('ICE connected — opening data channel...');
     if (s === 'failed') {
-      self.showError('ICE connection failed — could not reach sender');
+      self.showError('ICE failed — could not reach sender. Candidate count: see debug panel. Try: both on same network? VPN? Firewall?');
     }
+    if (s === 'disconnected') self.setStep('ICE disconnected — connection dropped');
   };
 
   this.pc.ondatachannel = function(e) {
@@ -1170,6 +1180,7 @@ ReceiverApp.prototype.handleSignalingMessage = function(msg) {
   var self = this;
   switch (msg.type) {
     case 'offer':
+      this.setStep('offer received — setting up WebRTC...');
       this.setupPeerConnection();
       dbg('[receiver] got offer, setting remote description', '#aaa');
       this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
@@ -1182,6 +1193,7 @@ ReceiverApp.prototype.handleSignalingMessage = function(msg) {
             });
           });
           self.pendingCandidates = [];
+          self.setStep('creating answer...');
           return self.pc.createAnswer();
         })
         .then(function(answer) {
@@ -1189,12 +1201,14 @@ ReceiverApp.prototype.handleSignalingMessage = function(msg) {
           return self.pc.setLocalDescription(answer);
         })
         .then(function() {
+          self.setStep('gathering ICE candidates (finding network path)...');
           dbg('[receiver] waiting for ICE gathering...', '#aaa');
           return waitForIceGathering(self.pc);
         })
         .then(function() {
           var sdp = self.pc.localDescription.toJSON();
           var candidateCount = (sdp.sdp.match(/a=candidate/g) || []).length;
+          self.setStep('sent answer (' + candidateCount + ' candidates) — waiting for P2P connection...');
           dbg('[receiver] sending answer with ' + candidateCount + ' embedded candidates', '#aaa');
           self.signaling.send({ type: 'answer', sdp: sdp });
         })
@@ -1267,11 +1281,18 @@ ReceiverApp.prototype.handleChannelMessage = function(data) {
   }
 };
 
+ReceiverApp.prototype.setStep = function(text) {
+  var el = document.getElementById('recv-step');
+  if (el) el.textContent = text;
+  dbg('[receiver] step: ' + text, '#aaa');
+};
+
 ReceiverApp.prototype.showError = function(msg) {
   document.getElementById('recv-waiting').classList.add('hidden');
   var el = document.getElementById('recv-error');
   el.textContent = msg;
   el.classList.remove('hidden');
+  dbg('[receiver] ERROR: ' + msg, '#ff4455');
 };
 
 /* =========================================================
