@@ -541,7 +541,8 @@
       </div>
       <p class="done-label">transfer complete</p>
       <p id="recv-done-name" class="done-sublabel"></p>
-      <button id="download-btn" class="btn btn--accent mt-8">download file</button>
+      <!-- Native <a> download — works in Safari; href set dynamically -->
+      <a id="download-btn" class="btn btn--accent mt-8" style="text-decoration:none">download file</a>
     </div>
 
     <div id="recv-error" class="error-banner hidden"></div>
@@ -998,7 +999,17 @@ ReceiverApp.prototype.handleChannelMessage = function(data) {
     }
 
     if (msg.type === 'done') {
-      this.fileBlob = new Blob(this.chunks, { type: this.meta.mimeType });
+      // Convert ArrayBuffers → Uint8Array before Blob construction (fixes Safari)
+      var uint8Arrays = this.chunks.map(function(buf) { return new Uint8Array(buf); });
+      this.fileBlob = new Blob(uint8Arrays, { type: this.meta.mimeType });
+
+      // Build object URL and wire it directly onto the <a> — works in Safari
+      // because the user clicking the link IS the gesture; no programmatic .click() needed
+      var url = URL.createObjectURL(this.fileBlob);
+      var btn = document.getElementById('download-btn');
+      btn.href = url;
+      btn.download = this.meta.name; // honoured by Chrome/Firefox; Safari uses filename from URL
+      btn.setAttribute('target', '_blank'); // Safari fallback: opens file in new tab if download attr ignored
 
       // Show done state
       document.getElementById('recv-receiving').classList.add('hidden');
@@ -1006,14 +1017,9 @@ ReceiverApp.prototype.handleChannelMessage = function(data) {
       doneEl.classList.remove('hidden');
       document.getElementById('recv-done-name').textContent = this.meta.name;
 
-      // Wire download button
-      var self = this;
-      document.getElementById('download-btn').addEventListener('click', function() {
-        self.triggerDownload();
-      });
-
-      // Auto-download (works in Chrome/Firefox; Safari may require the button click)
-      setTimeout(function() { self.triggerDownload(); }, 300);
+      // Attempt programmatic click for Chrome/Firefox (Safari will block this, which is fine —
+      // the visible button above is the Safari path)
+      try { btn.click(); } catch(e) {}
     }
   } else {
     // Binary chunk (ArrayBuffer)
@@ -1025,18 +1031,6 @@ ReceiverApp.prototype.handleChannelMessage = function(data) {
       document.getElementById('recv-pct').textContent = pct + '%';
     }
   }
-};
-
-ReceiverApp.prototype.triggerDownload = function() {
-  if (!this.fileBlob) return;
-  var url = URL.createObjectURL(this.fileBlob);
-  var a = document.createElement('a');
-  a.href = url;
-  a.download = this.meta.name;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
 };
 
 ReceiverApp.prototype.showError = function(msg) {
