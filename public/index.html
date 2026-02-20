@@ -1,0 +1,1087 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SEND</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* ===== VARIABLES ===== */
+    :root {
+      --bg:          #0a0a0a;
+      --surface:     #111111;
+      --surface-2:   #161616;
+      --border:      #1e1e1e;
+      --border-2:    #2a2a2a;
+      --text:        #efefef;
+      --text-2:      #999999;
+      --muted:       #444444;
+      --accent:      #00ff88;
+      --accent-dim:  rgba(0, 255, 136, 0.06);
+      --accent-border: rgba(0, 255, 136, 0.3);
+      --error:       #ff4455;
+      --error-bg:    rgba(255, 68, 85, 0.08);
+      --font-sans:   'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono:   'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+      --radius:      8px;
+      --radius-sm:   5px;
+      --transition:  140ms ease;
+    }
+
+    /* ===== RESET ===== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ===== LAYOUT ===== */
+    #app {
+      width: 100%;
+      max-width: 520px;
+      padding: 48px 24px 64px;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      min-height: 100vh;
+    }
+
+    /* ===== HEADER ===== */
+    header {
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+      margin-bottom: 52px;
+    }
+
+    .logo {
+      font-family: var(--font-mono);
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.25em;
+      color: var(--accent);
+      text-transform: uppercase;
+    }
+
+    .tagline {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      letter-spacing: 0.04em;
+    }
+
+    /* ===== VIEWS ===== */
+    .view {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* ===== DROP ZONE ===== */
+    .drop-zone {
+      border: 1.5px dashed var(--border-2);
+      border-radius: var(--radius);
+      padding: 72px 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color var(--transition), background var(--transition);
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .drop-zone:hover {
+      border-color: var(--accent-border);
+      background: var(--accent-dim);
+    }
+
+    .drop-zone.drag-over {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    .drop-zone.has-file {
+      border-style: solid;
+      border-color: var(--border-2);
+      padding: 28px 40px;
+      cursor: default;
+    }
+
+    .drop-zone.has-file:hover {
+      border-color: var(--border-2);
+      background: transparent;
+    }
+
+    .drop-icon {
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 16px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .drop-icon svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .drop-label {
+      font-size: 13px;
+      color: var(--text-2);
+      font-family: var(--font-mono);
+    }
+
+    .drop-sublabel {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    /* ===== FILE INFO ROW ===== */
+    .file-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .file-icon {
+      width: 32px;
+      height: 32px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: var(--text-2);
+    }
+
+    .file-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .file-meta {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .file-name {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .file-size {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 1px;
+    }
+
+    /* ===== SECTION LABEL ===== */
+    .section-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      margin-bottom: 8px;
+    }
+
+    /* ===== SHARE LINK ===== */
+    .share-block {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .share-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .share-input {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border-2);
+      border-radius: var(--radius-sm);
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      padding: 10px 12px;
+      outline: none;
+      cursor: text;
+      min-width: 0;
+      letter-spacing: 0.02em;
+    }
+
+    .share-input::selection {
+      background: var(--accent-dim);
+    }
+
+    /* ===== BUTTONS ===== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 9px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-family: var(--font-mono);
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      border: 1.5px solid transparent;
+      transition: all var(--transition);
+      white-space: nowrap;
+      line-height: 1;
+    }
+
+    .btn--ghost {
+      background: transparent;
+      border-color: var(--border-2);
+      color: var(--text-2);
+    }
+
+    .btn--ghost:hover {
+      border-color: var(--accent-border);
+      color: var(--accent);
+    }
+
+    .btn--ghost.copied {
+      border-color: var(--accent-border);
+      color: var(--accent);
+    }
+
+    .btn--accent {
+      background: var(--accent);
+      color: #000;
+      font-weight: 600;
+      border-color: var(--accent);
+    }
+
+    .btn--accent:hover {
+      opacity: 0.88;
+    }
+
+    .btn--full {
+      width: 100%;
+    }
+
+    /* ===== DIVIDER ===== */
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 4px 0;
+    }
+
+    /* ===== STATUS ===== */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+      transition: background var(--transition);
+    }
+
+    .status-dot.active {
+      background: var(--accent);
+      box-shadow: 0 0 6px var(--accent);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .status-text {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-2);
+    }
+
+    /* ===== PROGRESS ===== */
+    .progress-block {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .progress-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .progress-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-2);
+    }
+
+    .progress-pct {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent);
+    }
+
+    .progress-track {
+      height: 3px;
+      background: var(--surface-2);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      border-radius: 2px;
+      transition: width 80ms linear;
+    }
+
+    /* ===== RECEIVER STATES ===== */
+    .receiver-center {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 60px 0 40px;
+      gap: 20px;
+    }
+
+    .receiver-title {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-2);
+      text-align: center;
+    }
+
+    .receiver-hint {
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+      margin-top: -12px;
+    }
+
+    /* ===== SPINNER ===== */
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 2px solid var(--border-2);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ===== DONE STATE ===== */
+    .done-icon {
+      width: 48px;
+      height: 48px;
+      border: 1.5px solid var(--accent-border);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+    }
+
+    .done-icon svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .done-label {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      color: var(--text);
+      text-align: center;
+    }
+
+    .done-sublabel {
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+      margin-top: -14px;
+    }
+
+    /* ===== ERROR ===== */
+    .error-banner {
+      margin-top: 16px;
+      padding: 12px 14px;
+      background: var(--error-bg);
+      border: 1px solid rgba(255, 68, 85, 0.2);
+      border-radius: var(--radius-sm);
+      color: var(--error);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    /* ===== UTILITY ===== */
+    .hidden { display: none !important; }
+    .mt-4 { margin-top: 4px; }
+    .mt-8 { margin-top: 8px; }
+    .mt-16 { margin-top: 16px; }
+    .mt-24 { margin-top: 24px; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <span class="logo">SEND</span>
+    <span class="tagline">zero-server file transfer</span>
+  </header>
+
+  <!-- ====== SENDER VIEW ====== -->
+  <main id="view-sender" class="view">
+
+    <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="Drop file or click to select">
+      <div class="drop-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </div>
+      <p class="drop-label">drop a file to send</p>
+      <p class="drop-sublabel">or click to browse</p>
+      <input type="file" id="file-input" hidden aria-hidden="true">
+    </div>
+
+    <div id="share-block" class="share-block hidden">
+      <p class="section-label">shareable link</p>
+      <div class="share-row">
+        <input id="share-input" class="share-input" readonly aria-label="Shareable link">
+        <button id="copy-btn" class="btn btn--ghost" aria-label="Copy link">copy</button>
+      </div>
+    </div>
+
+    <div id="sender-status" class="status-row hidden">
+      <span id="sender-dot" class="status-dot active"></span>
+      <span id="sender-status-text" class="status-text"></span>
+    </div>
+
+    <div id="sender-progress" class="progress-block hidden">
+      <div class="progress-top">
+        <span class="progress-label">sending</span>
+        <span id="sender-pct" class="progress-pct">0%</span>
+      </div>
+      <div class="progress-track">
+        <div id="sender-fill" class="progress-fill"></div>
+      </div>
+    </div>
+
+    <div id="sender-error" class="error-banner hidden"></div>
+
+  </main>
+
+  <!-- ====== RECEIVER VIEW ====== -->
+  <main id="view-receiver" class="view hidden">
+
+    <div id="recv-waiting" class="receiver-center">
+      <div class="spinner"></div>
+      <p class="receiver-title">connecting to sender...</p>
+    </div>
+
+    <div id="recv-receiving" class="hidden">
+      <div id="recv-file-row" class="file-row" style="margin-bottom:20px">
+        <div class="file-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+        </div>
+        <div class="file-meta">
+          <div id="recv-file-name" class="file-name"></div>
+          <div id="recv-file-size" class="file-size"></div>
+        </div>
+      </div>
+      <div class="progress-block">
+        <div class="progress-top">
+          <span class="progress-label">receiving</span>
+          <span id="recv-pct" class="progress-pct">0%</span>
+        </div>
+        <div class="progress-track">
+          <div id="recv-fill" class="progress-fill"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="recv-done" class="receiver-center hidden">
+      <div class="done-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+      </div>
+      <p class="done-label">transfer complete</p>
+      <p id="recv-done-name" class="done-sublabel"></p>
+      <button id="download-btn" class="btn btn--accent mt-8">download file</button>
+    </div>
+
+    <div id="recv-error" class="error-banner hidden"></div>
+
+  </main>
+
+</div>
+
+<script>
+'use strict';
+
+/* =========================================================
+   CONSTANTS
+   ========================================================= */
+
+var CHUNK_SIZE = 65536; // 64 KB
+
+var ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' }
+];
+
+var RTC_CONFIG = {
+  iceServers: ICE_SERVERS,
+  sdpSemantics: 'unified-plan'
+};
+
+/* =========================================================
+   UTILS
+   ========================================================= */
+
+function generateId() {
+  return Math.random().toString(36).slice(2, 8);
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function wsUrl() {
+  var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  return proto + '://' + location.host;
+}
+
+/* =========================================================
+   SIGNALING CLIENT
+   ========================================================= */
+
+function SignalingClient(sessionId, onMessage) {
+  this.sessionId = sessionId;
+  this.onMessage = onMessage;
+  this.ws = null;
+  this.ready = false;
+  this.queue = [];
+}
+
+SignalingClient.prototype.connect = function() {
+  var self = this;
+  return new Promise(function(resolve, reject) {
+    var ws = new WebSocket(wsUrl());
+    self.ws = ws;
+
+    ws.onopen = function() {
+      self.ready = true;
+      self.ws.send(JSON.stringify({ type: 'join', sessionId: self.sessionId }));
+      self.queue.forEach(function(m) { ws.send(JSON.stringify(m)); });
+      self.queue = [];
+      resolve();
+    };
+
+    ws.onmessage = function(e) {
+      try {
+        var msg = JSON.parse(e.data);
+        self.onMessage(msg);
+      } catch(err) {}
+    };
+
+    ws.onerror = function(e) { reject(e); };
+    ws.onclose = function() { self.ready = false; };
+  });
+};
+
+SignalingClient.prototype.send = function(msg) {
+  if (this.ready && this.ws && this.ws.readyState === WebSocket.OPEN) {
+    this.ws.send(JSON.stringify(msg));
+  } else {
+    this.queue.push(msg);
+  }
+};
+
+SignalingClient.prototype.close = function() {
+  if (this.ws) this.ws.close();
+};
+
+/* =========================================================
+   SENDER APP
+   ========================================================= */
+
+function SenderApp() {
+  this.file = null;
+  this.sessionId = generateId();
+  this.signaling = null;
+  this.pc = null;
+  this.dc = null;
+}
+
+SenderApp.prototype.init = function() {
+  // Set URL hash so link is shareable immediately
+  history.replaceState(null, '', '#' + this.sessionId);
+  this.bindUI();
+};
+
+SenderApp.prototype.bindUI = function() {
+  var self = this;
+  var dropZone = document.getElementById('drop-zone');
+  var fileInput = document.getElementById('file-input');
+  var copyBtn = document.getElementById('copy-btn');
+
+  // Click/keyboard on drop zone
+  dropZone.addEventListener('click', function() { fileInput.click(); });
+  dropZone.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+  });
+
+  // Drag events
+  dropZone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+  });
+  ['dragleave', 'dragend'].forEach(function(ev) {
+    dropZone.addEventListener(ev, function() { dropZone.classList.remove('drag-over'); });
+  });
+  dropZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    var file = e.dataTransfer.files[0];
+    if (file) self.onFileSelected(file);
+  });
+
+  // File input
+  fileInput.addEventListener('change', function(e) {
+    if (e.target.files[0]) self.onFileSelected(e.target.files[0]);
+  });
+
+  // Copy button
+  copyBtn.addEventListener('click', function() {
+    var val = document.getElementById('share-input').value;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(val).then(function() { flashCopied(copyBtn); });
+    } else {
+      var input = document.getElementById('share-input');
+      input.select();
+      try { document.execCommand('copy'); } catch(e) {}
+      flashCopied(copyBtn);
+    }
+  });
+};
+
+function flashCopied(btn) {
+  btn.textContent = 'copied!';
+  btn.classList.add('copied');
+  setTimeout(function() {
+    btn.textContent = 'copy';
+    btn.classList.remove('copied');
+  }, 2000);
+}
+
+SenderApp.prototype.onFileSelected = function(file) {
+  var self = this;
+  this.file = file;
+
+  // Update drop zone to show file info
+  var dropZone = document.getElementById('drop-zone');
+  dropZone.classList.add('has-file');
+  dropZone.innerHTML =
+    '<div class="file-row">' +
+      '<div class="file-icon">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+          '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>' +
+          '<polyline points="14 2 14 8 20 8"/>' +
+        '</svg>' +
+      '</div>' +
+      '<div class="file-meta">' +
+        '<div class="file-name">' + escapeHtml(file.name) + '</div>' +
+        '<div class="file-size">' + formatBytes(file.size) + '</div>' +
+      '</div>' +
+    '</div>';
+
+  // Show share link
+  var shareLink = location.origin + '/#' + this.sessionId;
+  document.getElementById('share-input').value = shareLink;
+  document.getElementById('share-block').classList.remove('hidden');
+
+  // Show status
+  this.setStatus('waiting for receiver to open link...');
+
+  // Connect to signaling server
+  this.signaling = new SignalingClient(this.sessionId, function(msg) {
+    self.handleSignalingMessage(msg);
+  });
+  this.signaling.connect().catch(function(err) {
+    self.showError('Could not connect to signaling server: ' + err.message);
+  });
+};
+
+SenderApp.prototype.handleSignalingMessage = function(msg) {
+  var self = this;
+  switch (msg.type) {
+    case 'receiver-joined':
+      this.setStatus('receiver connected — establishing P2P channel...');
+      this.createOffer();
+      break;
+
+    case 'answer':
+      this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp)).catch(function(e) {
+        self.showError('Failed to set remote description: ' + e.message);
+      });
+      break;
+
+    case 'ice-candidate':
+      if (msg.candidate && this.pc) {
+        this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(function() {});
+      }
+      break;
+
+    case 'peer-disconnected':
+      this.setStatus('receiver disconnected');
+      if (this.senderDot) this.senderDot.classList.remove('active');
+      break;
+
+    case 'error':
+      this.showError(msg.message);
+      break;
+  }
+};
+
+SenderApp.prototype.createOffer = function() {
+  var self = this;
+  this.pc = new RTCPeerConnection(RTC_CONFIG);
+
+  // Create DataChannel BEFORE offer — required for Safari
+  this.dc = this.pc.createDataChannel('file-transfer', { ordered: true });
+  this.dc.binaryType = 'arraybuffer';
+  this.dc.bufferedAmountLowThreshold = 1024 * 1024; // 1 MB low-water mark
+
+  this.dc.onopen = function() {
+    self.setStatus('sending...');
+    self.sendFile();
+  };
+
+  this.dc.onerror = function(e) {
+    self.showError('DataChannel error: ' + (e.error ? e.error.message : 'unknown'));
+  };
+
+  this.dc.onclose = function() {
+    // Only update if we haven't already shown 100%
+  };
+
+  this.pc.onicecandidate = function(e) {
+    self.signaling.send({ type: 'ice-candidate', candidate: e.candidate });
+  };
+
+  this.pc.onconnectionstatechange = function() {
+    if (self.pc.connectionState === 'failed') {
+      self.showError('P2P connection failed — try again');
+    }
+  };
+
+  this.pc.createOffer()
+    .then(function(offer) { return self.pc.setLocalDescription(offer); })
+    .then(function() {
+      self.signaling.send({ type: 'offer', sdp: self.pc.localDescription });
+    })
+    .catch(function(e) {
+      self.showError('Failed to create offer: ' + e.message);
+    });
+};
+
+SenderApp.prototype.sendFile = function() {
+  var self = this;
+  var file = this.file;
+  var dc = this.dc;
+  var offset = 0;
+  var paused = false;
+
+  // Send metadata first
+  dc.send(JSON.stringify({
+    type: 'meta',
+    name: file.name,
+    size: file.size,
+    mimeType: file.type || 'application/octet-stream'
+  }));
+
+  document.getElementById('sender-progress').classList.remove('hidden');
+
+  function sendNextChunk() {
+    if (paused) return;
+
+    // Backpressure: yield if buffer is getting full
+    if (dc.bufferedAmount > 8 * 1024 * 1024) {
+      paused = true;
+      dc.addEventListener('bufferedamountlow', function onLow() {
+        dc.removeEventListener('bufferedamountlow', onLow);
+        paused = false;
+        sendNextChunk();
+      });
+      return;
+    }
+
+    if (offset >= file.size) {
+      dc.send(JSON.stringify({ type: 'done' }));
+      self.setProgress(100);
+      self.setStatus('sent — link is still active');
+      document.getElementById('sender-dot').classList.remove('active');
+      return;
+    }
+
+    var slice = file.slice(offset, offset + CHUNK_SIZE);
+    slice.arrayBuffer().then(function(buf) {
+      dc.send(buf);
+      offset += buf.byteLength;
+      self.setProgress(Math.round((offset / file.size) * 100));
+      setTimeout(sendNextChunk, 0);
+    });
+  }
+
+  sendNextChunk();
+};
+
+SenderApp.prototype.setProgress = function(pct) {
+  document.getElementById('sender-fill').style.width = pct + '%';
+  document.getElementById('sender-pct').textContent = pct + '%';
+};
+
+SenderApp.prototype.setStatus = function(text) {
+  var statusRow = document.getElementById('sender-status');
+  statusRow.classList.remove('hidden');
+  document.getElementById('sender-status-text').textContent = text;
+};
+
+SenderApp.prototype.showError = function(msg) {
+  var el = document.getElementById('sender-error');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+};
+
+/* =========================================================
+   RECEIVER APP
+   ========================================================= */
+
+function ReceiverApp(sessionId) {
+  this.sessionId = sessionId;
+  this.signaling = null;
+  this.pc = null;
+  this.chunks = [];
+  this.receivedBytes = 0;
+  this.meta = null;
+  this.fileBlob = null;
+}
+
+ReceiverApp.prototype.init = function() {
+  var self = this;
+
+  // Switch to receiver view
+  document.getElementById('view-sender').classList.add('hidden');
+  document.getElementById('view-receiver').classList.remove('hidden');
+
+  // Connect signaling
+  this.signaling = new SignalingClient(this.sessionId, function(msg) {
+    self.handleSignalingMessage(msg);
+  });
+  this.signaling.connect().catch(function(err) {
+    self.showError('Could not connect to signaling server: ' + err.message);
+  });
+};
+
+ReceiverApp.prototype.setupPeerConnection = function() {
+  var self = this;
+  this.pc = new RTCPeerConnection(RTC_CONFIG);
+
+  this.pc.onicecandidate = function(e) {
+    self.signaling.send({ type: 'ice-candidate', candidate: e.candidate });
+  };
+
+  this.pc.onconnectionstatechange = function() {
+    if (self.pc.connectionState === 'failed') {
+      self.showError('P2P connection failed — check your network');
+    }
+  };
+
+  this.pc.ondatachannel = function(e) {
+    var ch = e.channel;
+    ch.binaryType = 'arraybuffer';
+
+    ch.onopen = function() {
+      document.getElementById('recv-waiting').classList.add('hidden');
+      document.getElementById('recv-receiving').classList.remove('hidden');
+    };
+
+    ch.onmessage = function(ev) {
+      self.handleChannelMessage(ev.data);
+    };
+
+    ch.onerror = function(e) {
+      self.showError('DataChannel error: ' + (e.error ? e.error.message : 'unknown'));
+    };
+  };
+};
+
+ReceiverApp.prototype.handleSignalingMessage = function(msg) {
+  var self = this;
+  switch (msg.type) {
+    case 'offer':
+      this.setupPeerConnection();
+      this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
+        .then(function() { return self.pc.createAnswer(); })
+        .then(function(answer) { return self.pc.setLocalDescription(answer); })
+        .then(function() {
+          self.signaling.send({ type: 'answer', sdp: self.pc.localDescription });
+        })
+        .catch(function(e) {
+          self.showError('WebRTC negotiation failed: ' + e.message);
+        });
+      break;
+
+    case 'ice-candidate':
+      if (this.pc && msg.candidate) {
+        this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(function() {});
+      }
+      break;
+
+    case 'peer-disconnected':
+      if (!this.fileBlob) {
+        this.showError('Sender disconnected — transfer may be incomplete');
+      }
+      break;
+  }
+};
+
+ReceiverApp.prototype.handleChannelMessage = function(data) {
+  if (typeof data === 'string') {
+    var msg = JSON.parse(data);
+
+    if (msg.type === 'meta') {
+      this.meta = msg;
+      this.chunks = [];
+      this.receivedBytes = 0;
+      document.getElementById('recv-file-name').textContent = msg.name;
+      document.getElementById('recv-file-size').textContent = formatBytes(msg.size);
+    }
+
+    if (msg.type === 'done') {
+      this.fileBlob = new Blob(this.chunks, { type: this.meta.mimeType });
+
+      // Show done state
+      document.getElementById('recv-receiving').classList.add('hidden');
+      var doneEl = document.getElementById('recv-done');
+      doneEl.classList.remove('hidden');
+      document.getElementById('recv-done-name').textContent = this.meta.name;
+
+      // Wire download button
+      var self = this;
+      document.getElementById('download-btn').addEventListener('click', function() {
+        self.triggerDownload();
+      });
+
+      // Auto-download (works in Chrome/Firefox; Safari may require the button click)
+      setTimeout(function() { self.triggerDownload(); }, 300);
+    }
+  } else {
+    // Binary chunk (ArrayBuffer)
+    this.chunks.push(data);
+    this.receivedBytes += data.byteLength;
+    if (this.meta && this.meta.size > 0) {
+      var pct = Math.round((this.receivedBytes / this.meta.size) * 100);
+      document.getElementById('recv-fill').style.width = pct + '%';
+      document.getElementById('recv-pct').textContent = pct + '%';
+    }
+  }
+};
+
+ReceiverApp.prototype.triggerDownload = function() {
+  if (!this.fileBlob) return;
+  var url = URL.createObjectURL(this.fileBlob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = this.meta.name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
+};
+
+ReceiverApp.prototype.showError = function(msg) {
+  // Hide waiting spinner
+  document.getElementById('recv-waiting').classList.add('hidden');
+  var el = document.getElementById('recv-error');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+};
+
+/* =========================================================
+   UTILS
+   ========================================================= */
+
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/* =========================================================
+   BOOTSTRAP
+   ========================================================= */
+
+function bootstrap() {
+  var hash = location.hash.slice(1);
+
+  if (hash && hash.length >= 4) {
+    // Receiver: session ID in hash
+    var receiver = new ReceiverApp(hash);
+    receiver.init();
+  } else {
+    // Sender: fresh session
+    var sender = new SenderApp();
+    sender.init();
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootstrap);
+} else {
+  bootstrap();
+}
+</script>
+</body>
+</html>
