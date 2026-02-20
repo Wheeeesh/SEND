@@ -558,18 +558,44 @@
    CONSTANTS
    ========================================================= */
 
-var CHUNK_SIZE = 65536; // 64 KB
+var CHUNK_SIZE = 16384; // 16 KB — smaller chunks are more reliable on Safari/iOS
 
+// ICE servers: multiple STUN + free TURN relays via Open Relay Project
+// TURN is essential for Safari on iOS which restricts host ICE candidates
 var ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' }
+  { urls: 'stun:stun.relay.metered.ca:80' },
+  {
+    urls: 'turn:global.relay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:global.relay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  }
 ];
 
 var RTC_CONFIG = {
   iceServers: ICE_SERVERS,
-  sdpSemantics: 'unified-plan'
+  sdpSemantics: 'unified-plan',
+  iceCandidatePoolSize: 10
 };
+
+// How long to wait for ICE gathering before giving up and sending offer anyway
+var ICE_GATHERING_TIMEOUT_MS = 4000;
 
 /* =========================================================
    UTILS
@@ -589,6 +615,29 @@ function formatBytes(bytes) {
 function wsUrl() {
   var proto = location.protocol === 'https:' ? 'wss' : 'ws';
   return proto + '://' + location.host;
+}
+
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Wait for ICE gathering to complete, with a timeout fallback
+// Safari sometimes gathers only host candidates and stalls — timeout ensures we proceed
+function waitForIceGathering(pc) {
+  return new Promise(function(resolve) {
+    if (pc.iceGatheringState === 'complete') { resolve(); return; }
+    var timer = setTimeout(resolve, ICE_GATHERING_TIMEOUT_MS);
+    pc.onicegatheringstatechange = function() {
+      if (pc.iceGatheringState === 'complete') {
+        clearTimeout(timer);
+        resolve();
+      }
+    };
+  });
 }
 
 /* =========================================================
@@ -624,14 +673,15 @@ SignalingClient.prototype.connect = function() {
       } catch(err) {}
     };
 
-    ws.onerror = function(e) { reject(e); };
+    ws.onerror = function(e) { reject(new Error('WebSocket error')); };
     ws.onclose = function() { self.ready = false; };
   });
 };
 
 SignalingClient.prototype.send = function(msg) {
+  var str = JSON.stringify(msg);
   if (this.ready && this.ws && this.ws.readyState === WebSocket.OPEN) {
-    this.ws.send(JSON.stringify(msg));
+    this.ws.send(str);
   } else {
     this.queue.push(msg);
   }
@@ -651,10 +701,12 @@ function SenderApp() {
   this.signaling = null;
   this.pc = null;
   this.dc = null;
+  // Buffer ICE candidates that arrive before remote desc is set
+  this.pendingCandidates = [];
+  this.remoteDescSet = false;
 }
 
 SenderApp.prototype.init = function() {
-  // Set URL hash so link is shareable immediately
   history.replaceState(null, '', '#' + this.sessionId);
   this.bindUI();
 };
@@ -665,13 +717,11 @@ SenderApp.prototype.bindUI = function() {
   var fileInput = document.getElementById('file-input');
   var copyBtn = document.getElementById('copy-btn');
 
-  // Click/keyboard on drop zone
   dropZone.addEventListener('click', function() { fileInput.click(); });
   dropZone.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
   });
 
-  // Drag events
   dropZone.addEventListener('dragover', function(e) {
     e.preventDefault();
     dropZone.classList.add('drag-over');
@@ -686,12 +736,10 @@ SenderApp.prototype.bindUI = function() {
     if (file) self.onFileSelected(file);
   });
 
-  // File input
   fileInput.addEventListener('change', function(e) {
     if (e.target.files[0]) self.onFileSelected(e.target.files[0]);
   });
 
-  // Copy button
   copyBtn.addEventListener('click', function() {
     var val = document.getElementById('share-input').value;
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -708,17 +756,13 @@ SenderApp.prototype.bindUI = function() {
 function flashCopied(btn) {
   btn.textContent = 'copied!';
   btn.classList.add('copied');
-  setTimeout(function() {
-    btn.textContent = 'copy';
-    btn.classList.remove('copied');
-  }, 2000);
+  setTimeout(function() { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 2000);
 }
 
 SenderApp.prototype.onFileSelected = function(file) {
   var self = this;
   this.file = file;
 
-  // Update drop zone to show file info
   var dropZone = document.getElementById('drop-zone');
   dropZone.classList.add('has-file');
   dropZone.innerHTML =
@@ -735,15 +779,12 @@ SenderApp.prototype.onFileSelected = function(file) {
       '</div>' +
     '</div>';
 
-  // Show share link
   var shareLink = location.origin + '/#' + this.sessionId;
   document.getElementById('share-input').value = shareLink;
   document.getElementById('share-block').classList.remove('hidden');
 
-  // Show status
   this.setStatus('waiting for receiver to open link...');
 
-  // Connect to signaling server
   this.signaling = new SignalingClient(this.sessionId, function(msg) {
     self.handleSignalingMessage(msg);
   });
@@ -761,20 +802,35 @@ SenderApp.prototype.handleSignalingMessage = function(msg) {
       break;
 
     case 'answer':
-      this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp)).catch(function(e) {
-        self.showError('Failed to set remote description: ' + e.message);
-      });
+      if (!this.pc) return;
+      this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
+        .then(function() {
+          self.remoteDescSet = true;
+          // Flush any ICE candidates that arrived before the answer
+          self.pendingCandidates.forEach(function(c) {
+            self.pc.addIceCandidate(new RTCIceCandidate(c)).catch(function() {});
+          });
+          self.pendingCandidates = [];
+        })
+        .catch(function(e) {
+          self.showError('Failed to set remote description: ' + e.message);
+        });
       break;
 
     case 'ice-candidate':
-      if (msg.candidate && this.pc) {
+      if (!msg.candidate) return; // null = end-of-candidates signal, safe to ignore
+      if (!this.pc) return;
+      if (this.remoteDescSet) {
         this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(function() {});
+      } else {
+        // Buffer candidates until remote description is set
+        this.pendingCandidates.push(msg.candidate);
       }
       break;
 
     case 'peer-disconnected':
       this.setStatus('receiver disconnected');
-      if (this.senderDot) this.senderDot.classList.remove('active');
+      document.getElementById('sender-dot').classList.remove('active');
       break;
 
     case 'error':
@@ -787,10 +843,14 @@ SenderApp.prototype.createOffer = function() {
   var self = this;
   this.pc = new RTCPeerConnection(RTC_CONFIG);
 
-  // Create DataChannel BEFORE offer — required for Safari
+  // DataChannel MUST be created before createOffer() — Safari requirement
   this.dc = this.pc.createDataChannel('file-transfer', { ordered: true });
   this.dc.binaryType = 'arraybuffer';
-  this.dc.bufferedAmountLowThreshold = 1024 * 1024; // 1 MB low-water mark
+
+  // Set bufferedAmountLowThreshold if supported (not all Safari versions support it)
+  if ('bufferedAmountLowThreshold' in this.dc) {
+    this.dc.bufferedAmountLowThreshold = 512 * 1024; // 512 KB
+  }
 
   this.dc.onopen = function() {
     self.setStatus('sending...');
@@ -801,24 +861,41 @@ SenderApp.prototype.createOffer = function() {
     self.showError('DataChannel error: ' + (e.error ? e.error.message : 'unknown'));
   };
 
-  this.dc.onclose = function() {
-    // Only update if we haven't already shown 100%
-  };
-
+  // Trickle ICE: relay each candidate as it's gathered
+  // Send null candidate too so receiver knows gathering is done
   this.pc.onicecandidate = function(e) {
-    self.signaling.send({ type: 'ice-candidate', candidate: e.candidate });
+    if (e.candidate) {
+      self.signaling.send({ type: 'ice-candidate', candidate: e.candidate.toJSON() });
+    }
+    // Don't send null — it's meaningless to the other side and can cause errors
   };
 
+  // Monitor both connectionState AND iceConnectionState — Safari is more reliable on ice*
   this.pc.onconnectionstatechange = function() {
     if (self.pc.connectionState === 'failed') {
-      self.showError('P2P connection failed — try again');
+      self.showError('P2P connection failed — the receiver may be behind a restrictive firewall');
+    }
+  };
+  this.pc.oniceconnectionstatechange = function() {
+    var s = self.pc.iceConnectionState;
+    if (s === 'failed') {
+      self.showError('ICE connection failed — could not establish a direct or relayed path');
+    }
+    if (s === 'disconnected') {
+      self.setStatus('connection interrupted...');
     }
   };
 
   this.pc.createOffer()
     .then(function(offer) { return self.pc.setLocalDescription(offer); })
     .then(function() {
-      self.signaling.send({ type: 'offer', sdp: self.pc.localDescription });
+      // Wait for ICE gathering to complete (or timeout) before sending offer
+      // This gives Safari's ICE agent time to gather TURN candidates
+      return waitForIceGathering(self.pc);
+    })
+    .then(function() {
+      // Send the fully-gathered (or timed-out) local description
+      self.signaling.send({ type: 'offer', sdp: self.pc.localDescription.toJSON() });
     })
     .catch(function(e) {
       self.showError('Failed to create offer: ' + e.message);
@@ -830,9 +907,8 @@ SenderApp.prototype.sendFile = function() {
   var file = this.file;
   var dc = this.dc;
   var offset = 0;
-  var paused = false;
+  var sending = false;
 
-  // Send metadata first
   dc.send(JSON.stringify({
     type: 'meta',
     name: file.name,
@@ -842,17 +918,16 @@ SenderApp.prototype.sendFile = function() {
 
   document.getElementById('sender-progress').classList.remove('hidden');
 
-  function sendNextChunk() {
-    if (paused) return;
+  // Safari-compatible backpressure: poll bufferedAmount since
+  // bufferedAmountLowThreshold/bufferedamountlow event isn't always reliable
+  function pump() {
+    if (sending) return;
 
-    // Backpressure: yield if buffer is getting full
-    if (dc.bufferedAmount > 8 * 1024 * 1024) {
-      paused = true;
-      dc.addEventListener('bufferedamountlow', function onLow() {
-        dc.removeEventListener('bufferedamountlow', onLow);
-        paused = false;
-        sendNextChunk();
-      });
+    if (dc.readyState !== 'open') return;
+
+    // Yield if buffer is too full (use a conservative limit for Safari)
+    if (dc.bufferedAmount > 256 * 1024) {
+      setTimeout(pump, 50);
       return;
     }
 
@@ -864,16 +939,23 @@ SenderApp.prototype.sendFile = function() {
       return;
     }
 
+    sending = true;
     var slice = file.slice(offset, offset + CHUNK_SIZE);
     slice.arrayBuffer().then(function(buf) {
+      if (dc.readyState !== 'open') return;
       dc.send(buf);
       offset += buf.byteLength;
+      sending = false;
       self.setProgress(Math.round((offset / file.size) * 100));
-      setTimeout(sendNextChunk, 0);
+      // Use setTimeout(0) to yield to event loop — keeps UI responsive
+      setTimeout(pump, 0);
+    }).catch(function(e) {
+      sending = false;
+      self.showError('Read error: ' + e.message);
     });
   }
 
-  sendNextChunk();
+  pump();
 };
 
 SenderApp.prototype.setProgress = function(pct) {
@@ -905,16 +987,17 @@ function ReceiverApp(sessionId) {
   this.receivedBytes = 0;
   this.meta = null;
   this.fileBlob = null;
+  // Buffer ICE candidates that arrive before setRemoteDescription
+  this.pendingCandidates = [];
+  this.remoteDescSet = false;
 }
 
 ReceiverApp.prototype.init = function() {
   var self = this;
 
-  // Switch to receiver view
   document.getElementById('view-sender').classList.add('hidden');
   document.getElementById('view-receiver').classList.remove('hidden');
 
-  // Connect signaling
   this.signaling = new SignalingClient(this.sessionId, function(msg) {
     self.handleSignalingMessage(msg);
   });
@@ -928,12 +1011,20 @@ ReceiverApp.prototype.setupPeerConnection = function() {
   this.pc = new RTCPeerConnection(RTC_CONFIG);
 
   this.pc.onicecandidate = function(e) {
-    self.signaling.send({ type: 'ice-candidate', candidate: e.candidate });
+    if (e.candidate) {
+      self.signaling.send({ type: 'ice-candidate', candidate: e.candidate.toJSON() });
+    }
   };
 
+  // Watch both state machines — Safari is more reliable with iceConnectionState
   this.pc.onconnectionstatechange = function() {
     if (self.pc.connectionState === 'failed') {
-      self.showError('P2P connection failed — check your network');
+      self.showError('P2P connection failed — try reopening the link');
+    }
+  };
+  this.pc.oniceconnectionstatechange = function() {
+    if (self.pc.iceConnectionState === 'failed') {
+      self.showError('ICE connection failed — could not reach sender');
     }
   };
 
@@ -941,18 +1032,26 @@ ReceiverApp.prototype.setupPeerConnection = function() {
     var ch = e.channel;
     ch.binaryType = 'arraybuffer';
 
-    ch.onopen = function() {
-      document.getElementById('recv-waiting').classList.add('hidden');
-      document.getElementById('recv-receiving').classList.remove('hidden');
-    };
-
     ch.onmessage = function(ev) {
       self.handleChannelMessage(ev.data);
     };
 
-    ch.onerror = function(e) {
-      self.showError('DataChannel error: ' + (e.error ? e.error.message : 'unknown'));
+    ch.onerror = function(ev) {
+      self.showError('DataChannel error: ' + (ev.error ? ev.error.message : 'unknown'));
     };
+
+    // Guard: onopen may already have fired by the time we attach this handler
+    // This happens in Safari when the channel opens very quickly
+    function onChannelOpen() {
+      document.getElementById('recv-waiting').classList.add('hidden');
+      document.getElementById('recv-receiving').classList.remove('hidden');
+    }
+
+    if (ch.readyState === 'open') {
+      onChannelOpen();
+    } else {
+      ch.onopen = onChannelOpen;
+    }
   };
 };
 
@@ -962,10 +1061,22 @@ ReceiverApp.prototype.handleSignalingMessage = function(msg) {
     case 'offer':
       this.setupPeerConnection();
       this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
-        .then(function() { return self.pc.createAnswer(); })
+        .then(function() {
+          self.remoteDescSet = true;
+          // Flush buffered ICE candidates now that remote desc is set
+          self.pendingCandidates.forEach(function(c) {
+            self.pc.addIceCandidate(new RTCIceCandidate(c)).catch(function() {});
+          });
+          self.pendingCandidates = [];
+          return self.pc.createAnswer();
+        })
         .then(function(answer) { return self.pc.setLocalDescription(answer); })
         .then(function() {
-          self.signaling.send({ type: 'answer', sdp: self.pc.localDescription });
+          // Wait for ICE gathering before sending answer — critical for Safari/iOS
+          return waitForIceGathering(self.pc);
+        })
+        .then(function() {
+          self.signaling.send({ type: 'answer', sdp: self.pc.localDescription.toJSON() });
         })
         .catch(function(e) {
           self.showError('WebRTC negotiation failed: ' + e.message);
@@ -973,8 +1084,13 @@ ReceiverApp.prototype.handleSignalingMessage = function(msg) {
       break;
 
     case 'ice-candidate':
-      if (this.pc && msg.candidate) {
+      if (!msg.candidate) return; // ignore null end-of-candidates
+      if (!this.pc) return;
+      if (this.remoteDescSet) {
         this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(function() {});
+      } else {
+        // Buffer until remote description is set
+        this.pendingCandidates.push(msg.candidate);
       }
       break;
 
@@ -988,7 +1104,8 @@ ReceiverApp.prototype.handleSignalingMessage = function(msg) {
 
 ReceiverApp.prototype.handleChannelMessage = function(data) {
   if (typeof data === 'string') {
-    var msg = JSON.parse(data);
+    var msg;
+    try { msg = JSON.parse(data); } catch(e) { return; }
 
     if (msg.type === 'meta') {
       this.meta = msg;
@@ -999,26 +1116,22 @@ ReceiverApp.prototype.handleChannelMessage = function(data) {
     }
 
     if (msg.type === 'done') {
-      // Convert ArrayBuffers → Uint8Array before Blob construction (fixes Safari)
+      // Convert ArrayBuffers → Uint8Array before Blob — required for Safari compatibility
       var uint8Arrays = this.chunks.map(function(buf) { return new Uint8Array(buf); });
       this.fileBlob = new Blob(uint8Arrays, { type: this.meta.mimeType });
 
-      // Build object URL and wire it directly onto the <a> — works in Safari
-      // because the user clicking the link IS the gesture; no programmatic .click() needed
+      // Set href directly on the <a> element so Safari can download via real user gesture
       var url = URL.createObjectURL(this.fileBlob);
       var btn = document.getElementById('download-btn');
       btn.href = url;
-      btn.download = this.meta.name; // honoured by Chrome/Firefox; Safari uses filename from URL
-      btn.setAttribute('target', '_blank'); // Safari fallback: opens file in new tab if download attr ignored
+      btn.download = this.meta.name;
+      btn.setAttribute('target', '_blank'); // Opens in new tab on Safari if download attr is ignored
 
-      // Show done state
       document.getElementById('recv-receiving').classList.add('hidden');
-      var doneEl = document.getElementById('recv-done');
-      doneEl.classList.remove('hidden');
+      document.getElementById('recv-done').classList.remove('hidden');
       document.getElementById('recv-done-name').textContent = this.meta.name;
 
-      // Attempt programmatic click for Chrome/Firefox (Safari will block this, which is fine —
-      // the visible button above is the Safari path)
+      // Non-Safari browsers: trigger download automatically
       try { btn.click(); } catch(e) {}
     }
   } else {
@@ -1034,24 +1147,11 @@ ReceiverApp.prototype.handleChannelMessage = function(data) {
 };
 
 ReceiverApp.prototype.showError = function(msg) {
-  // Hide waiting spinner
   document.getElementById('recv-waiting').classList.add('hidden');
   var el = document.getElementById('recv-error');
   el.textContent = msg;
   el.classList.remove('hidden');
 };
-
-/* =========================================================
-   UTILS
-   ========================================================= */
-
-function escapeHtml(str) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 /* =========================================================
    BOOTSTRAP
@@ -1061,11 +1161,9 @@ function bootstrap() {
   var hash = location.hash.slice(1);
 
   if (hash && hash.length >= 4) {
-    // Receiver: session ID in hash
     var receiver = new ReceiverApp(hash);
     receiver.init();
   } else {
-    // Sender: fresh session
     var sender = new SenderApp();
     sender.init();
   }
