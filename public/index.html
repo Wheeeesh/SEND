@@ -695,9 +695,9 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
-function wsUrl() {
+function wsUrl(sessionId) {
   var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  return proto + '://' + location.host;
+  return proto + '://' + location.host + '/ws?sessionId=' + encodeURIComponent(sessionId);
 }
 
 function escapeHtml(str) {
@@ -738,12 +738,15 @@ function SignalingClient(sessionId, onMessage) {
 SignalingClient.prototype.connect = function() {
   var self = this;
   return new Promise(function(resolve, reject) {
-    var ws = new WebSocket(wsUrl());
+    // Pass sessionId in the URL for the Cloudflare Worker/Durable Object.
+    // The local Node.js dev server also accepts the join message below for compatibility.
+    var ws = new WebSocket(wsUrl(self.sessionId));
     self.ws = ws;
 
     ws.onopen = function() {
       self.ready = true;
       dbg('[ws] connected, joining session ' + self.sessionId, '#00ff88');
+      // Send join message for local dev server compatibility (Worker ignores it)
       self.ws.send(JSON.stringify({ type: 'join', sessionId: self.sessionId }));
       self.queue.forEach(function(m) { ws.send(JSON.stringify(m)); });
       self.queue = [];
