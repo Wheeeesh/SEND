@@ -577,7 +577,7 @@
    CONSTANTS
    ========================================================= */
 
-var CHUNK_SIZE = 65536; // 64 KB chunks — faster transfer
+var CHUNK_SIZE = 262144; // 256 KB chunks — maximise DataChannel throughput
 
 // RTC_CONFIG is populated at runtime by fetchIceConfig() before any peer connection is created
 var RTC_CONFIG = null;
@@ -928,10 +928,6 @@ SenderApp.prototype.createOffer = function() {
   this.dc.binaryType = 'arraybuffer';
   dbg('[sender] DataChannel created, binaryType=' + this.dc.binaryType, '#aaa');
 
-  if ('bufferedAmountLowThreshold' in this.dc) {
-    this.dc.bufferedAmountLowThreshold = 512 * 1024;
-  }
-
   this.dc.onopen = function() {
     dbg('[sender] DataChannel open', '#00ff88');
     self.setStatus('sending...');
@@ -993,7 +989,6 @@ SenderApp.prototype.sendFile = function() {
   var file = this.file;
   var dc = this.dc;
   var offset = 0;
-  var sending = false;
 
   dc.send(JSON.stringify({
     type: 'meta',
@@ -1004,44 +999,83 @@ SenderApp.prototype.sendFile = function() {
 
   document.getElementById('sender-progress').classList.remove('hidden');
 
-  // Safari-compatible backpressure: poll bufferedAmount since
-  // bufferedAmountLowThreshold/bufferedamountlow event isn't always reliable
-  function pump() {
-    if (sending) return;
+  // High-throughput send loop.
+  //
+  // Strategy: keep the DataChannel buffer filled to ~4 MB at all times.
+  // We read ahead and send chunks in a tight loop until the buffer is full,
+  // then wait for it to drain below the low-water mark before resuming.
+  // This saturates the connection without wasting time on event-loop ticks.
+  //
+  // bufferedAmountLowThreshold + bufferedamountlow event is used where
+  // supported (Chrome/Firefox). Safari falls back to a short poll.
 
-    if (dc.readyState !== 'open') return;
+  var HIGH_WATER = 4 * 1024 * 1024;  // pause sending above 4 MB buffered
+  var LOW_WATER  = 1 * 1024 * 1024;  // resume sending below 1 MB buffered
+  var paused = false;
+  var done = false;
 
-    // Yield if buffer is too full (use a conservative limit for Safari)
-    if (dc.bufferedAmount > 256 * 1024) {
-      setTimeout(pump, 50);
-      return;
-    }
-
-    if (offset >= file.size) {
-      dc.send(JSON.stringify({ type: 'done' }));
-      self.setProgress(100);
-      self.setStatus('sent — link is still active');
-      document.getElementById('sender-dot').classList.remove('active');
-      return;
-    }
-
-    sending = true;
-    var slice = file.slice(offset, offset + CHUNK_SIZE);
-    slice.arrayBuffer().then(function(buf) {
-      if (dc.readyState !== 'open') return;
-      dc.send(buf);
-      offset += buf.byteLength;
-      sending = false;
-      self.setProgress(Math.round((offset / file.size) * 100));
-      // Use setTimeout(0) to yield to event loop — keeps UI responsive
-      setTimeout(pump, 0);
-    }).catch(function(e) {
-      sending = false;
-      self.showError('Read error: ' + e.message);
-    });
+  if ('bufferedAmountLowThreshold' in dc) {
+    dc.bufferedAmountLowThreshold = LOW_WATER;
   }
 
-  pump();
+  function sendNext() {
+    if (done || dc.readyState !== 'open') return;
+
+    // Drain as many chunks as possible until the buffer is full
+    while (dc.bufferedAmount < HIGH_WATER && offset < file.size && !paused) {
+      var end = Math.min(offset + CHUNK_SIZE, file.size);
+      // file.slice is synchronous — no async read needed for small slices
+      // For large files arrayBuffer() is still needed; batch reads ahead
+      var slice = file.slice(offset, end);
+      offset = end;
+
+      slice.arrayBuffer().then(function(buf) {
+        if (dc.readyState !== 'open') return;
+        dc.send(buf);
+        self.setProgress(Math.round((offset / file.size) * 100));
+
+        if (offset >= file.size) {
+          done = true;
+          dc.send(JSON.stringify({ type: 'done' }));
+          self.setProgress(100);
+          self.setStatus('sent — link is still active');
+          document.getElementById('sender-dot').classList.remove('active');
+          return;
+        }
+
+        // If buffer has filled up, pause and let it drain
+        if (dc.bufferedAmount >= HIGH_WATER) {
+          paused = true;
+        }
+      }).catch(function(e) {
+        self.showError('Read error: ' + e.message);
+      });
+    }
+
+    if (offset < file.size && !done) {
+      paused = true;
+    }
+  }
+
+  // Resume when buffer drains — event-driven on modern browsers
+  dc.onbufferedamountlow = function() {
+    if (!paused) return;
+    paused = false;
+    sendNext();
+  };
+
+  // Safari fallback: poll every 20ms when paused
+  function safariPoll() {
+    if (done) return;
+    if (paused && dc.bufferedAmount < LOW_WATER) {
+      paused = false;
+      sendNext();
+    }
+    setTimeout(safariPoll, 20);
+  }
+  safariPoll();
+
+  sendNext();
 };
 
 SenderApp.prototype.setProgress = function(pct) {
