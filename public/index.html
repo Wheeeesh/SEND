@@ -577,13 +577,10 @@
    CONSTANTS
    ========================================================= */
 
-var CHUNK_SIZE = 16384; // 16 KB — more reliable on Safari/iOS
+var CHUNK_SIZE = 65536; // 64 KB chunks — faster transfer
 
 // RTC_CONFIG is populated at runtime by fetchIceConfig() before any peer connection is created
 var RTC_CONFIG = null;
-
-// How long to wait for ICE gathering before giving up and sending offer anyway
-var ICE_GATHERING_TIMEOUT_MS = 6000;
 
 // Fetch ICE server config from our own server's /ice endpoint.
 // Server returns Metered TURN credentials if configured, or STUN-only fallback.
@@ -708,20 +705,7 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-// Wait for ICE gathering to complete, with a timeout fallback
-// Safari sometimes gathers only host candidates and stalls — timeout ensures we proceed
-function waitForIceGathering(pc) {
-  return new Promise(function(resolve) {
-    if (pc.iceGatheringState === 'complete') { resolve(); return; }
-    var timer = setTimeout(resolve, ICE_GATHERING_TIMEOUT_MS);
-    pc.onicegatheringstatechange = function() {
-      if (pc.iceGatheringState === 'complete') {
-        clearTimeout(timer);
-        resolve();
-      }
-    };
-  });
-}
+// (trickle ICE — no gathering wait needed)
 
 /* =========================================================
    SIGNALING CLIENT
@@ -994,14 +978,9 @@ SenderApp.prototype.createOffer = function() {
       return self.pc.setLocalDescription(offer);
     })
     .then(function() {
-      dbg('[sender] waiting for ICE gathering (max ' + ICE_GATHERING_TIMEOUT_MS + 'ms)...', '#aaa');
-      return waitForIceGathering(self.pc);
-    })
-    .then(function() {
-      var sdp = self.pc.localDescription.toJSON();
-      var candidateCount = (sdp.sdp.match(/a=candidate/g) || []).length;
-      dbg('[sender] sending offer with ' + candidateCount + ' embedded candidates', '#aaa');
-      self.signaling.send({ type: 'offer', sdp: sdp });
+      // Trickle ICE: send offer immediately, candidates follow via onicecandidate
+      dbg('[sender] sending offer (trickle ICE)', '#aaa');
+      self.signaling.send({ type: 'offer', sdp: self.pc.localDescription.toJSON() });
     })
     .catch(function(e) {
       dbg('[sender] offer failed: ' + e.message, '#ff4455');
@@ -1214,16 +1193,10 @@ ReceiverApp.prototype.handleSignalingMessage = function(msg) {
             return self.pc.setLocalDescription(answer);
           })
           .then(function() {
-            self.setStep('gathering ICE candidates (finding network path)...');
-            dbg('[receiver] waiting for ICE gathering...', '#aaa');
-            return waitForIceGathering(self.pc);
-          })
-          .then(function() {
-            var sdp = self.pc.localDescription.toJSON();
-            var candidateCount = (sdp.sdp.match(/a=candidate/g) || []).length;
-            self.setStep('sent answer (' + candidateCount + ' candidates) — waiting for P2P connection...');
-            dbg('[receiver] sending answer with ' + candidateCount + ' embedded candidates', '#aaa');
-            self.signaling.send({ type: 'answer', sdp: sdp });
+            // Trickle ICE: send answer immediately, candidates follow via onicecandidate
+            self.setStep('sent answer — waiting for P2P connection...');
+            dbg('[receiver] sending answer (trickle ICE)', '#aaa');
+            self.signaling.send({ type: 'answer', sdp: self.pc.localDescription.toJSON() });
           })
           .catch(function(e) {
             dbg('[receiver] negotiation failed: ' + e.message, '#ff4455');
