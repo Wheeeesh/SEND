@@ -2,33 +2,31 @@
  * SEND — Cloudflare Worker entry point
  *
  * Handles:
- *  - GET /ice  → returns TURN/STUN ICE server credentials
+ *  - GET /ice  → returns TURN/STUN ICE server credentials (Cloudflare Calls TURN)
  *  - GET /ws   → upgrades to WebSocket, routes to SignalingRoom Durable Object
  *  - Everything else → served as static assets from public/ (via ASSETS binding)
  *
  * Single deployment: one Worker serves both the frontend and the signaling backend.
+ * TURN via Cloudflare Calls — no third-party services needed.
  */
 
 export { SignalingRoom } from './signaling-room.js';
 
-// Fallback STUN servers when no TURN key is configured
+// Fallback STUN-only config (used if CF_TURN_KEY_ID / CF_TURN_KEY_SECRET are not set)
 const FALLBACK_ICE = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
 ];
 
-// Cache TURN credentials in memory for 50 min (they expire after 1 hour)
+// Cache generated TURN credentials — they're valid for 24h, refresh every 23h
 let iceCache = null;
 let iceCacheTime = 0;
-const ICE_CACHE_TTL = 50 * 60 * 1000;
+const ICE_CACHE_TTL = 23 * 60 * 60 * 1000;
 
-async function fetchMeteredIce(env) {
-  const apiKey = env.METERED_API_KEY;
-  const appName = env.METERED_APP_NAME;
-  if (!apiKey || !appName) return null;
+async function fetchCloudflareTurn(env) {
+  const keyId = env.CF_TURN_KEY_ID;
+  const keySecret = env.CF_TURN_KEY_SECRET;
+  if (!keyId || !keySecret) return null;
 
   const now = Date.now();
   if (iceCache && (now - iceCacheTime) < ICE_CACHE_TTL) {
@@ -36,15 +34,23 @@ async function fetchMeteredIce(env) {
   }
 
   try {
-    const url = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Metered API ${res.status}`);
-    const servers = await res.json();
-    iceCache = servers;
+    const url = `https://rtc.live.cloudflare.com/v1/turn/keys/${keyId}/credentials/generate-ice-servers`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${keySecret}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ttl: 86400 }),
+    });
+    if (!res.ok) throw new Error(`CF Calls TURN API ${res.status}`);
+    const data = await res.json();
+    // data.iceServers is the array
+    iceCache = data.iceServers;
     iceCacheTime = now;
-    return servers;
+    return iceCache;
   } catch (err) {
-    console.error('[ice] Metered fetch failed:', err.message);
+    console.error('[ice] Cloudflare TURN fetch failed:', err.message);
     return null;
   }
 }
@@ -66,8 +72,8 @@ export default {
 
     // ── GET /ice ─────────────────────────────────────────────────────────────
     if (url.pathname === '/ice' && request.method === 'GET') {
-      const metered = await fetchMeteredIce(env);
-      const iceServers = metered || FALLBACK_ICE;
+      const cfTurn = await fetchCloudflareTurn(env);
+      const iceServers = cfTurn || FALLBACK_ICE;
       return Response.json(
         { iceServers },
         {
