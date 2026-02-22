@@ -989,6 +989,10 @@ SenderApp.prototype.sendFile = function() {
   var file = this.file;
   var dc = this.dc;
   var offset = 0;
+  var done = false;
+  var paused = false;
+  var lastProgressPct = -1;
+  var rafPending = false;
 
   dc.send(JSON.stringify({
     type: 'meta',
@@ -999,83 +1003,82 @@ SenderApp.prototype.sendFile = function() {
 
   document.getElementById('sender-progress').classList.remove('hidden');
 
-  // High-throughput send loop.
-  //
-  // Strategy: keep the DataChannel buffer filled to ~4 MB at all times.
-  // We read ahead and send chunks in a tight loop until the buffer is full,
-  // then wait for it to drain below the low-water mark before resuming.
-  // This saturates the connection without wasting time on event-loop ticks.
-  //
-  // bufferedAmountLowThreshold + bufferedamountlow event is used where
-  // supported (Chrome/Firefox). Safari falls back to a short poll.
-
-  var HIGH_WATER = 4 * 1024 * 1024;  // pause sending above 4 MB buffered
-  var LOW_WATER  = 1 * 1024 * 1024;  // resume sending below 1 MB buffered
-  var paused = false;
-  var done = false;
+  var HIGH_WATER = 4 * 1024 * 1024;  // pause above 4 MB buffered
+  var LOW_WATER  = 1 * 1024 * 1024;  // resume below 1 MB buffered
 
   if ('bufferedAmountLowThreshold' in dc) {
     dc.bufferedAmountLowThreshold = LOW_WATER;
   }
 
-  function sendNext() {
+  // FIX 2: Throttle DOM progress updates with requestAnimationFrame.
+  // Only update when the integer percentage actually changes, and batch
+  // updates so we never do more than one DOM write per animation frame.
+  function scheduleProgress(pct) {
+    if (pct === lastProgressPct) return;
+    lastProgressPct = pct;
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(function() {
+      rafPending = false;
+      self.setProgress(lastProgressPct);
+    });
+  }
+
+  // FIX 1: Sequential async pump — one chunk read at a time so offset
+  // is captured correctly and dc.send() order is guaranteed.
+  // After each send we immediately loop for the next chunk as long as
+  // the buffer has room, achieving the same throughput without the
+  // async-inside-while pitfall.
+  function pump() {
     if (done || dc.readyState !== 'open') return;
 
-    // Drain as many chunks as possible until the buffer is full
-    while (dc.bufferedAmount < HIGH_WATER && offset < file.size && !paused) {
-      var end = Math.min(offset + CHUNK_SIZE, file.size);
-      // file.slice is synchronous — no async read needed for small slices
-      // For large files arrayBuffer() is still needed; batch reads ahead
-      var slice = file.slice(offset, end);
-      offset = end;
-
-      slice.arrayBuffer().then(function(buf) {
-        if (dc.readyState !== 'open') return;
-        dc.send(buf);
-        self.setProgress(Math.round((offset / file.size) * 100));
-
-        if (offset >= file.size) {
-          done = true;
-          dc.send(JSON.stringify({ type: 'done' }));
-          self.setProgress(100);
-          self.setStatus('sent — link is still active');
-          document.getElementById('sender-dot').classList.remove('active');
-          return;
-        }
-
-        // If buffer has filled up, pause and let it drain
-        if (dc.bufferedAmount >= HIGH_WATER) {
-          paused = true;
-        }
-      }).catch(function(e) {
-        self.showError('Read error: ' + e.message);
-      });
-    }
-
-    if (offset < file.size && !done) {
+    if (dc.bufferedAmount >= HIGH_WATER) {
       paused = true;
+      return;
     }
+
+    if (offset >= file.size) {
+      done = true;
+      dc.send(JSON.stringify({ type: 'done' }));
+      scheduleProgress(100);
+      self.setStatus('sent — link is still active');
+      document.getElementById('sender-dot').classList.remove('active');
+      return;
+    }
+
+    var chunkOffset = offset;
+    var end = Math.min(chunkOffset + CHUNK_SIZE, file.size);
+    offset = end;
+
+    file.slice(chunkOffset, end).arrayBuffer().then(function(buf) {
+      if (done || dc.readyState !== 'open') return;
+      dc.send(buf);
+      scheduleProgress(Math.round((offset / file.size) * 100));
+      pump(); // immediately try next chunk — tight sequential chain
+    }).catch(function(e) {
+      self.showError('Read error: ' + e.message);
+    });
   }
 
   // Resume when buffer drains — event-driven on modern browsers
   dc.onbufferedamountlow = function() {
     if (!paused) return;
     paused = false;
-    sendNext();
+    pump();
   };
 
-  // Safari fallback: poll every 20ms when paused
+  // FIX 4: Safari fallback poll — stops as soon as transfer is done
   function safariPoll() {
-    if (done) return;
+    if (done) return; // exit — no more scheduling after done
     if (paused && dc.bufferedAmount < LOW_WATER) {
       paused = false;
-      sendNext();
+      pump();
     }
     setTimeout(safariPoll, 20);
   }
   safariPoll();
 
-  sendNext();
+  pump();
 };
 
 SenderApp.prototype.setProgress = function(pct) {
@@ -1103,10 +1106,14 @@ function ReceiverApp(sessionId) {
   this.sessionId = sessionId;
   this.signaling = null;
   this.pc = null;
-  this.chunks = [];
+  // FIX 3: single pre-allocated Uint8Array instead of array of chunks
+  this.recvBuffer = null;  // allocated on 'meta'
+  this.recvOffset = 0;
   this.receivedBytes = 0;
   this.meta = null;
   this.fileBlob = null;
+  this.lastProgressPct = -1;
+  this.rafPending = false;
   // Buffer ICE candidates that arrive before setRemoteDescription
   this.pendingCandidates = [];
   this.remoteDescSet = false;
@@ -1258,45 +1265,65 @@ ReceiverApp.prototype.handleSignalingMessage = function(msg) {
 };
 
 ReceiverApp.prototype.handleChannelMessage = function(data) {
+  var self = this;
   if (typeof data === 'string') {
     var msg;
     try { msg = JSON.parse(data); } catch(e) { return; }
 
     if (msg.type === 'meta') {
       this.meta = msg;
-      this.chunks = [];
+      // FIX 3: pre-allocate one contiguous buffer for the entire file.
+      // Chunks are copied in as they arrive — zero extra allocations at 'done'.
+      this.recvBuffer = new Uint8Array(msg.size);
+      this.recvOffset = 0;
       this.receivedBytes = 0;
+      this.lastProgressPct = -1;
+      this.rafPending = false;
       document.getElementById('recv-file-name').textContent = msg.name;
       document.getElementById('recv-file-size').textContent = formatBytes(msg.size);
     }
 
     if (msg.type === 'done') {
-      // Convert ArrayBuffers → Uint8Array before Blob — required for Safari compatibility
-      var uint8Arrays = this.chunks.map(function(buf) { return new Uint8Array(buf); });
-      this.fileBlob = new Blob(uint8Arrays, { type: this.meta.mimeType });
+      // recvBuffer is already a single contiguous Uint8Array — wrap directly in Blob
+      this.fileBlob = new Blob([this.recvBuffer], { type: this.meta.mimeType });
+      this.recvBuffer = null; // release reference
 
-      // Set href directly on the <a> element so Safari can download via real user gesture
       var url = URL.createObjectURL(this.fileBlob);
       var btn = document.getElementById('download-btn');
       btn.href = url;
       btn.download = this.meta.name;
-      btn.setAttribute('target', '_blank'); // Opens in new tab on Safari if download attr is ignored
+      btn.setAttribute('target', '_blank');
 
       document.getElementById('recv-receiving').classList.add('hidden');
       document.getElementById('recv-done').classList.remove('hidden');
       document.getElementById('recv-done-name').textContent = this.meta.name;
 
-      // Non-Safari browsers: trigger download automatically
       try { btn.click(); } catch(e) {}
     }
   } else {
-    // Binary chunk (ArrayBuffer)
-    this.chunks.push(data);
+    // Binary chunk (ArrayBuffer) — copy into pre-allocated buffer
+    var chunk = new Uint8Array(data);
+    if (this.recvBuffer) {
+      this.recvBuffer.set(chunk, this.recvOffset);
+      this.recvOffset += chunk.byteLength;
+    }
     this.receivedBytes += data.byteLength;
+
+    // FIX 2: throttle receiver progress updates with rAF too
     if (this.meta && this.meta.size > 0) {
       var pct = Math.round((this.receivedBytes / this.meta.size) * 100);
-      document.getElementById('recv-fill').style.width = pct + '%';
-      document.getElementById('recv-pct').textContent = pct + '%';
+      if (pct !== this.lastProgressPct) {
+        this.lastProgressPct = pct;
+        if (!this.rafPending) {
+          this.rafPending = true;
+          var capturedPct = pct;
+          requestAnimationFrame(function() {
+            self.rafPending = false;
+            document.getElementById('recv-fill').style.width = self.lastProgressPct + '%';
+            document.getElementById('recv-pct').textContent = self.lastProgressPct + '%';
+          });
+        }
+      }
     }
   }
 };
